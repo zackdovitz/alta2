@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pug Berry Chomper</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: monospace;
+    overflow: hidden;
+  }
+  #header {
+    color: #e8d5b7;
+    font-size: 18px;
+    margin-bottom: 8px;
+    text-align: center;
+    image-rendering: pixelated;
+  }
+  #header span { color: #ff6b8a; }
+  canvas {
+    border: 4px solid #e8d5b7;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #3a7d44;
+  }
+  #info {
+    color: #e8d5b7;
+    font-size: 14px;
+    margin-top: 8px;
+    text-align: center;
+  }
+  #win-screen {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    color: #ffe66d;
+    font-size: 48px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+    z-index: 10;
+  }
+  #win-screen .sub { font-size: 20px; color: #e8d5b7; margin-top: 16px; }
+  #win-screen .restart { font-size: 18px; color: #ff6b8a; margin-top: 24px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="header">PUG BERRY CHOMPER &mdash; <span>Strawberries: <span id="score">0</span></span></div>
+<canvas id="game" width="480" height="480"></canvas>
+<div id="info">Arrow keys / WASD to move</div>
+<div id="win-screen">
+  <div>YOU WIN!</div>
+  <div class="sub">The pug has become ABSOLUTE UNIT</div>
+  <div class="restart" onclick="restartGame()">[ Press any key to restart ]</div>
+</div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width;
+const H = canvas.height;
+const scoreEl = document.getElementById('score');
+const winScreen = document.getElementById('win-screen');
+
+// ---- Pixel art drawing helpers ----
+function drawPixelGrid(x, y, size, grid, palette) {
+  const pxSize = size / grid[0].length;
+  for (let row = 0; row < grid.length; row++) {
+    for (let col = 0; col < grid[row].length; col++) {
+      const colorIdx = grid[row][col];
+      if (colorIdx === 0) continue; // transparent
+      ctx.fillStyle = palette[colorIdx];
+      ctx.fillRect(
+        Math.floor(x + col * pxSize),
+        Math.floor(y + row * pxSize),
+        Math.ceil(pxSize),
+        Math.ceil(pxSize)
+      );
+    }
+  }
+}
+
+// ---- 8-bit Pug sprite (12x12 grid) ----
+// Palette: 0=transparent, 1=tan, 2=dark brown, 3=black, 4=white, 5=pink tongue, 6=ear dark
+const pugPalette = {
+  1: '#e8c99b', // tan body
+  2: '#8b6914', // dark muzzle
+  3: '#222222', // black (eyes, nose)
+  4: '#f5f0e0', // white
+  5: '#ff8fab', // tongue/pink
+  6: '#a07030', // ear shadow
+};
+
+const pugRight = [
+  [0,0,0,6,6,0,0,6,6,0,0,0],
+  [0,0,6,1,1,6,6,1,1,6,0,0],
+  [0,0,1,1,1,1,1,1,1,1,0,0],
+  [0,1,1,3,1,1,1,1,3,1,1,0],
+  [0,1,1,3,1,2,2,1,3,1,1,0],
+  [0,1,1,1,2,3,3,2,1,1,1,0],
+  [0,0,1,1,2,2,2,2,1,1,0,0],
+  [0,0,1,1,1,5,5,1,1,1,0,0],
+  [0,1,1,1,1,1,1,1,1,1,1,0],
+  [0,1,1,0,1,1,1,1,0,1,1,0],
+  [0,1,1,0,0,0,0,0,0,1,1,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0],
+];
+
+const pugLeft = pugRight.map(row => [...row].reverse());
+
+// Walking frames - slight leg shift
+const pugRightWalk = [
+  [0,0,0,6,6,0,0,6,6,0,0,0],
+  [0,0,6,1,1,6,6,1,1,6,0,0],
+  [0,0,1,1,1,1,1,1,1,1,0,0],
+  [0,1,1,3,1,1,1,1,3,1,1,0],
+  [0,1,1,3,1,2,2,1,3,1,1,0],
+  [0,1,1,1,2,3,3,2,1,1,1,0],
+  [0,0,1,1,2,2,2,2,1,1,0,0],
+  [0,0,1,1,1,5,5,1,1,1,0,0],
+  [0,1,1,1,1,1,1,1,1,1,1,0],
+  [0,0,1,1,0,1,1,0,1,1,0,0],
+  [0,0,1,1,0,0,0,0,1,1,0,0],
+  [0,0,0,0,0,0,0,0,0,0,0,0],
+];
+
+const pugLeftWalk = pugRightWalk.map(row => [...row].reverse());
+
+// ---- Strawberry sprite (8x8 grid) ----
+const berryPalette = {
+  1: '#2d8c2d', // green stem
+  2: '#ff2255', // red body
+  3: '#cc1144', // dark red
+  4: '#ffee88', // yellow seeds
+  5: '#ff5577', // light red
+};
+
+const berrySprite = [
+  [0,0,0,1,1,0,0,0],
+  [0,0,1,1,0,1,0,0],
+  [0,2,2,2,2,2,2,0],
+  [2,2,4,2,2,4,2,2],
+  [2,5,2,2,4,2,5,2],
+  [0,3,2,4,2,2,3,0],
+  [0,0,3,2,2,3,0,0],
+  [0,0,0,3,3,0,0,0],
+];
+
+// ---- Grass decoration sprites ----
+const grassPalette = {
+  1: '#2e6e2e',
+  2: '#4a9a4a',
+};
+
+// ---- Game state ----
+const INITIAL_SIZE = 36;
+const WIN_SIZE_RATIO = 0.85; // pug fills 85% of screen = win
+const GROWTH_PER_BERRY = 12;
+const SPEED = 2.5;
+
+let pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
+let berries = [];
+let score = 0;
+let won = false;
+let grassPatches = [];
+let animTimer = 0;
+
+function spawnBerry() {
+  const margin = 30;
+  let attempts = 0;
+  let bx, by;
+  do {
+    bx = margin + Math.random() * (W - margin * 2);
+    by = margin + Math.random() * (H - margin * 2);
+    attempts++;
+  } while (attempts < 50 && dist(bx, by, pug.x, pug.y) < pug.size + 40);
+  berries.push({ x: bx, y: by, bobOffset: Math.random() * Math.PI * 2 });
+}
+
+function initGrass() {
+  grassPatches = [];
+  for (let i = 0; i < 40; i++) {
+    grassPatches.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      type: Math.floor(Math.random() * 3),
+    });
+  }
+}
+
+function dist(x1, y1, x2, y2) {
+  return Math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2);
+}
+
+function restartGame() {
+  pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
+  berries = [];
+  score = 0;
+  won = false;
+  scoreEl.textContent = '0';
+  winScreen.style.display = 'none';
+  for (let i = 0; i < 3; i++) spawnBerry();
+  initGrass();
+}
+
+// ---- Input ----
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (won) { restartGame(); }
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Mobile touch support
+let touchDir = { x: 0, y: 0 };
+canvas.addEventListener('touchstart', handleTouch, { passive: false });
+canvas.addEventListener('touchmove', handleTouch, { passive: false });
+canvas.addEventListener('touchend', () => { touchDir = { x: 0, y: 0 }; });
+
+function handleTouch(e) {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const tx = (e.touches[0].clientX - rect.left) * scaleX;
+  const ty = (e.touches[0].clientY - rect.top) * scaleY;
+  const dx = tx - pug.x;
+  const dy = ty - pug.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 5) {
+    touchDir = { x: dx / len, y: dy / len };
+  }
+}
+
+function getInput() {
+  let dx = 0, dy = 0;
+  if (keys['ArrowLeft'] || keys['a'] || keys['A']) dx -= 1;
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) dx += 1;
+  if (keys['ArrowUp'] || keys['w'] || keys['W']) dy -= 1;
+  if (keys['ArrowDown'] || keys['s'] || keys['S']) dy += 1;
+
+  // Add touch input
+  dx += touchDir.x;
+  dy += touchDir.y;
+
+  // Normalize
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 0) {
+    dx /= len;
+    dy /= len;
+  }
+  return { dx, dy };
+}
+
+// ---- Update ----
+function update() {
+  if (won) return;
+
+  const input = getInput();
+  // Speed scales slightly with size so the big pug doesn't feel sluggish
+  const speed = SPEED + (pug.size - INITIAL_SIZE) * 0.02;
+  pug.vx = input.dx * speed;
+  pug.vy = input.dy * speed;
+  pug.x += pug.vx;
+  pug.y += pug.vy;
+
+  // Clamp to canvas
+  const half = pug.size / 2;
+  pug.x = Math.max(half, Math.min(W - half, pug.x));
+  pug.y = Math.max(half, Math.min(H - half, pug.y));
+
+  // Facing direction
+  if (pug.vx > 0.1) pug.facing = 1;
+  if (pug.vx < -0.1) pug.facing = -1;
+
+  // Animation frame
+  if (Math.abs(pug.vx) > 0.1 || Math.abs(pug.vy) > 0.1) {
+    animTimer++;
+    if (animTimer % 10 === 0) pug.frame = (pug.frame + 1) % 2;
+  } else {
+    pug.frame = 0;
+  }
+
+  // Berry collision
+  for (let i = berries.length - 1; i >= 0; i--) {
+    const b = berries[i];
+    const berrySize = 20;
+    const eatDist = (pug.size + berrySize) / 2;
+    if (dist(pug.x, pug.y, b.x, b.y) < eatDist) {
+      berries.splice(i, 1);
+      score++;
+      scoreEl.textContent = score;
+      pug.size += GROWTH_PER_BERRY;
+
+      // Check win
+      const winSize = Math.min(W, H) * WIN_SIZE_RATIO;
+      if (pug.size >= winSize) {
+        won = true;
+        winScreen.style.display = 'flex';
+        return;
+      }
+
+      // Spawn new berries (sometimes extra as pug gets bigger)
+      spawnBerry();
+      if (score % 3 === 0) spawnBerry();
+    }
+  }
+}
+
+// ---- Draw ----
+function drawGrass() {
+  grassPatches.forEach(g => {
+    ctx.fillStyle = grassPalette[1];
+    const t = Date.now() / 800 + g.x;
+    const sway = Math.sin(t) * 1.5;
+    if (g.type === 0) {
+      ctx.fillRect(g.x + sway, g.y, 2, 6);
+      ctx.fillStyle = grassPalette[2];
+      ctx.fillRect(g.x + 3 + sway, g.y + 1, 2, 5);
+    } else if (g.type === 1) {
+      ctx.fillRect(g.x + sway, g.y, 2, 8);
+      ctx.fillRect(g.x - 2 + sway, g.y + 2, 2, 5);
+      ctx.fillStyle = grassPalette[2];
+      ctx.fillRect(g.x + 3 + sway, g.y + 1, 2, 6);
+    } else {
+      ctx.fillRect(g.x + sway, g.y, 2, 5);
+    }
+  });
+}
+
+function drawBerries(time) {
+  berries.forEach(b => {
+    const bobY = Math.sin(time / 400 + b.bobOffset) * 3;
+    const bSize = 20;
+    drawPixelGrid(b.x - bSize / 2, b.y - bSize / 2 + bobY, bSize, berrySprite, berryPalette);
+  });
+}
+
+function drawPug() {
+  let sprite;
+  if (pug.facing === 1) {
+    sprite = pug.frame === 0 ? pugRight : pugRightWalk;
+  } else {
+    sprite = pug.frame === 0 ? pugLeft : pugLeftWalk;
+  }
+  const half = pug.size / 2;
+  drawPixelGrid(pug.x - half, pug.y - half, pug.size, sprite, pugPalette);
+}
+
+function drawShadow() {
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.beginPath();
+  ctx.ellipse(pug.x, pug.y + pug.size / 2 - 2, pug.size * 0.4, pug.size * 0.12, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Size meter
+function drawSizeMeter() {
+  const winSize = Math.min(W, H) * WIN_SIZE_RATIO;
+  const progress = Math.min(1, (pug.size - INITIAL_SIZE) / (winSize - INITIAL_SIZE));
+  const barW = 120;
+  const barH = 10;
+  const bx = W - barW - 12;
+  const by = 10;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+  ctx.fillStyle = '#553322';
+  ctx.fillRect(bx, by, barW, barH);
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(bx, 0, bx + barW * progress, 0);
+  grad.addColorStop(0, '#ff6b8a');
+  grad.addColorStop(1, '#ffe66d');
+  ctx.fillStyle = grad;
+  ctx.fillRect(bx, by, barW * progress, barH);
+
+  ctx.fillStyle = '#e8d5b7';
+  ctx.font = '10px monospace';
+  ctx.fillText('SIZE', bx, by + barH + 12);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#3a7d44';
+  ctx.fillRect(0, 0, W, H);
+
+  // Checkerboard subtle pattern
+  ctx.fillStyle = 'rgba(0,0,0,0.03)';
+  const tileSize = 32;
+  for (let r = 0; r < H / tileSize; r++) {
+    for (let c = 0; c < W / tileSize; c++) {
+      if ((r + c) % 2 === 0) {
+        ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+      }
+    }
+  }
+
+  drawGrass();
+
+  const time = Date.now();
+  drawBerries(time);
+  drawShadow();
+  drawPug();
+  drawSizeMeter();
+}
+
+// ---- Game loop ----
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+// ---- Init ----
+restartGame();
+gameLoop();
+</script>
+</body>
+</html>
