@@ -360,10 +360,10 @@ const INITIAL_SIZE = 36;
 const WIN_SIZE_RATIO = 0.85;
 const GROWTH_PER_BERRY = 12;
 const SPEED = 2.5;
-const CAT_SPEED = 1.4;
+const CAT_SPEED = 0.8;
 const CAT_SIZE = 28;
-const NUM_CATS = 3;
-const MAX_BERRIES_STOLEN = 8; // cats steal this many = game over
+const NUM_CATS = 2;
+const MAX_BERRIES_STOLEN = 15; // cats steal this many = game over
 
 let pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
 let berries = [];
@@ -441,7 +441,7 @@ function spawnCats() {
       frame: 0,
       paletteIdx: i % catPalettes.length,
       targetBerry: null,
-      waitTimer: 60 + Math.random() * 60, // brief pause before chasing
+      waitTimer: 120 + Math.random() * 90, // longer pause before chasing
       animTimer: 0,
     });
   }
@@ -560,7 +560,7 @@ function updateCats() {
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len > 1) {
       // Speed scales up slightly as cats get more competitive
-      const speed = CAT_SPEED + catScore * 0.05;
+      const speed = CAT_SPEED + catScore * 0.02;
       cat.vx = (dx / len) * speed;
       cat.vy = (dy / len) * speed;
       cat.x += cat.vx;
@@ -587,15 +587,14 @@ function updateCats() {
         berries.splice(i, 1);
         catScore++;
         catScoreEl.textContent = catScore;
-        cat.waitTimer = 40 + Math.random() * 30; // pause after eating
+        cat.waitTimer = 80 + Math.random() * 60; // long pause after eating
 
         // Check lose condition
         if (catScore >= MAX_BERRIES_STOLEN) {
           gameOver = true;
           loseTimeEl.textContent = 'Time survived: ' + formatTime(gameElapsed);
           loseScreen.style.display = 'flex';
-          loseReplayBtn.style.display = 'none';
-          endScreenTimeout = setTimeout(() => { loseReplayBtn.style.display = 'block'; }, 5000);
+          loseReplayBtn.style.display = 'block';
           stopMusic();
           return;
         }
