@@ -93,7 +93,8 @@ async def on_message(message: discord.Message):
             f"{result.message}\n"
             f"Contracts: {result.contracts} | "
             f"Total cost: ${result.total_cost:.2f} | "
-            f"Stop loss: ${result.stop_loss_price:.2f}"
+            f"SL: ${result.stop_loss_price:.2f} | "
+            f"TP: ${result.take_profit_price:.2f}"
         )
     else:
         logger.warning("Order failed: %s", result.message)
@@ -113,9 +114,10 @@ def main():
 
     logger.info("Starting Discord Trading Alerts Bot...")
     logger.info(
-        "Risk settings: %.1f%% per trade, %.1f%% stop loss",
+        "Risk settings: %.1f%% per trade, %.1f%% stop loss, %.1f%% take profit",
         Config.RISK_PER_TRADE_PCT,
         Config.STOP_LOSS_PCT,
+        Config.TAKE_PROFIT_PCT,
     )
 
     client.run(Config.DISCORD_BOT_TOKEN)

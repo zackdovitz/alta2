@@ -44,6 +44,7 @@ Monitors Discord channels for options trading alerts and automatically places or
 | `RH_PASSWORD` | Robinhood password |
 | `RISK_PER_TRADE_PCT` | Max % of account to risk per trade (default: 1.0) |
 | `STOP_LOSS_PCT` | Stop-loss trigger % (default: 25.0) |
+| `TAKE_PROFIT_PCT` | Take-profit trigger % (default: 30.0) |
 | `PAPER_TRADE` | Set to `false` for live trading (default: `true`) |
 
 ## How It Works
@@ -52,4 +53,5 @@ Monitors Discord channels for options trading alerts and automatically places or
 2. Each message is parsed to extract: ticker, strike, call/put, expiration, entry price
 3. Position size is calculated: `max_risk = account_value * 1%`, then `contracts = max_risk / (loss_per_contract)`
 4. A limit buy order is placed through Robinhood
-5. A stop-loss sell order is immediately placed at 25% below entry price
+5. A stop-loss sell order is placed at 25% below entry price (configurable)
+6. A take-profit sell order is placed at 30% above entry price (configurable)

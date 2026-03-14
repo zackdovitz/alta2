@@ -6,6 +6,7 @@ Uses robin_stocks to:
   - Get account value for position sizing
   - Place options buy orders
   - Place stop-loss orders
+  - Place take-profit orders
 """
 
 import logging
@@ -26,6 +27,7 @@ class OrderResult:
     contracts: int
     total_cost: float
     stop_loss_price: float
+    take_profit_price: float
     message: str
 
 
@@ -60,18 +62,23 @@ def get_account_value() -> float:
 
 
 def calculate_position(
-    account_value: float, entry_price: float, risk_pct: float, stop_loss_pct: float
-) -> tuple[int, float]:
-    """Calculate number of contracts and stop-loss price.
+    account_value: float,
+    entry_price: float,
+    risk_pct: float,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+) -> tuple[int, float, float]:
+    """Calculate number of contracts, stop-loss price, and take-profit price.
 
     Args:
         account_value: Total account value in dollars.
         entry_price: Price per contract (premium).
         risk_pct: Max percentage of account to risk (e.g. 1.0 = 1%).
         stop_loss_pct: Stop-loss as percentage loss (e.g. 25.0 = sell at 25% loss).
+        take_profit_pct: Take-profit as percentage gain (e.g. 30.0 = sell at 30% gain).
 
     Returns:
-        (num_contracts, stop_loss_price)
+        (num_contracts, stop_loss_price, take_profit_price)
     """
     max_risk_dollars = account_value * (risk_pct / 100.0)
 
@@ -83,15 +90,15 @@ def calculate_position(
 
     # Number of contracts we can buy while keeping risk within budget
     if loss_per_contract <= 0:
-        return 0, 0.0
+        return 0, 0.0, 0.0
 
     num_contracts = int(max_risk_dollars / loss_per_contract)
     num_contracts = max(num_contracts, 0)
 
-    # Stop loss price = entry minus the allowed loss (per share, not per contract)
     stop_loss_price = round(entry_price * (1 - stop_loss_pct / 100.0), 2)
+    take_profit_price = round(entry_price * (1 + take_profit_pct / 100.0), 2)
 
-    return num_contracts, stop_loss_price
+    return num_contracts, stop_loss_price, take_profit_price
 
 
 def place_order(alert: ParsedAlert) -> OrderResult:
@@ -99,11 +106,12 @@ def place_order(alert: ParsedAlert) -> OrderResult:
     account_value = get_account_value()
     logger.info("Account value: $%.2f", account_value)
 
-    num_contracts, stop_loss_price = calculate_position(
+    num_contracts, stop_loss_price, take_profit_price = calculate_position(
         account_value=account_value,
         entry_price=alert.entry_price,
         risk_pct=Config.RISK_PER_TRADE_PCT,
         stop_loss_pct=Config.STOP_LOSS_PCT,
+        take_profit_pct=Config.TAKE_PROFIT_PCT,
     )
 
     if num_contracts == 0:
@@ -113,9 +121,11 @@ def place_order(alert: ParsedAlert) -> OrderResult:
             contracts=0,
             total_cost=0,
             stop_loss_price=0,
+            take_profit_price=0,
             message=(
                 f"Cannot place order: account value ${account_value:.2f} with "
-                f"1% risk (${account_value * 0.01:.2f}) is too small for "
+                f"{Config.RISK_PER_TRADE_PCT}% risk "
+                f"(${account_value * Config.RISK_PER_TRADE_PCT / 100:.2f}) is too small for "
                 f"{alert.ticker} at ${alert.entry_price} per contract"
             ),
         )
@@ -141,10 +151,12 @@ def place_order(alert: ParsedAlert) -> OrderResult:
             contracts=num_contracts,
             total_cost=total_cost,
             stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             message=(
                 f"[PAPER] Would buy {num_contracts}x {alert.ticker} "
                 f"${alert.strike} {alert.option_type} exp {alert.expiration} "
-                f"@ ${alert.entry_price} | Stop loss @ ${stop_loss_price}"
+                f"@ ${alert.entry_price} | SL @ ${stop_loss_price} | "
+                f"TP @ ${take_profit_price}"
             ),
         )
 
@@ -165,8 +177,9 @@ def place_order(alert: ParsedAlert) -> OrderResult:
         order_id = order.get("id", "unknown")
         logger.info("Buy order placed: %s", order_id)
 
-        # Place stop-loss order
+        # Place stop-loss and take-profit orders
         _place_stop_loss(alert, num_contracts, stop_loss_price)
+        _place_take_profit(alert, num_contracts, take_profit_price)
 
         return OrderResult(
             success=True,
@@ -174,10 +187,11 @@ def place_order(alert: ParsedAlert) -> OrderResult:
             contracts=num_contracts,
             total_cost=total_cost,
             stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             message=(
                 f"Bought {num_contracts}x {alert.ticker} ${alert.strike} "
                 f"{alert.option_type} exp {alert.expiration} @ ${alert.entry_price} "
-                f"| Stop loss set @ ${stop_loss_price}"
+                f"| SL @ ${stop_loss_price} | TP @ ${take_profit_price}"
             ),
         )
     except Exception as e:
@@ -188,6 +202,7 @@ def place_order(alert: ParsedAlert) -> OrderResult:
             contracts=num_contracts,
             total_cost=total_cost,
             stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
             message=f"Order failed: {e}",
         )
 
@@ -213,3 +228,28 @@ def _place_stop_loss(
         )
     except Exception as e:
         logger.error("Stop-loss order failed: %s", e)
+
+
+def _place_take_profit(
+    alert: ParsedAlert, num_contracts: int, take_profit_price: float
+) -> None:
+    """Place a take-profit sell order for an existing position."""
+    try:
+        rh.orders.order_sell_option_limit(
+            positionEffect="close",
+            creditOrDebit="credit",
+            price=take_profit_price,
+            symbol=alert.ticker,
+            quantity=num_contracts,
+            expirationDate=alert.expiration,
+            strike=alert.strike,
+            optionType=alert.option_type,
+            timeInForce="gtc",
+        )
+        logger.info(
+            "Take-profit order placed at $%.2f for %d contracts",
+            take_profit_price,
+            num_contracts,
+        )
+    except Exception as e:
+        logger.error("Take-profit order failed: %s", e)

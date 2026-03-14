@@ -18,9 +18,10 @@ class Config:
     RH_PASSWORD: str = os.getenv("RH_PASSWORD", "")
     RH_MFA_CODE: str = os.getenv("RH_MFA_CODE", "")
 
-    # Risk management
+    # Risk management (adjustable — these are defaults)
     RISK_PER_TRADE_PCT: float = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     STOP_LOSS_PCT: float = float(os.getenv("STOP_LOSS_PCT", "25.0"))
+    TAKE_PROFIT_PCT: float = float(os.getenv("TAKE_PROFIT_PCT", "30.0"))
 
     # Paper trading mode
     PAPER_TRADE: bool = os.getenv("PAPER_TRADE", "true").lower() == "true"
