@@ -232,7 +232,7 @@ async def place_order(alert: ParsedAlert) -> OrderResult:
         if is_manual:
             return await _place_entry_with_stop(
                 alert, option, opening_leg, closing_leg, option_symbol,
-                num_contracts, total_cost, stop_loss_price,
+                num_contracts, total_cost, stop_loss_price, take_profit_price,
             )
         else:
             return await _place_otoco(
@@ -297,10 +297,10 @@ async def _place_otoco(
 
 async def _place_entry_with_stop(
     alert, option, opening_leg, closing_leg, option_symbol,
-    num_contracts, total_cost, stop_loss_price,
+    num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
-    """Place OTO order: entry triggers stop-loss (no take-profit). TP via trim alert."""
-    oto = NewComplexOrder(
+    """Place OTOCO bracket: entry triggers OCO (stop-loss + take-profit). TP can be overridden by trim alert."""
+    bracket = NewComplexOrder(
         trigger_order=NewOrder(
             time_in_force=OrderTimeInForce.DAY,
             order_type=OrderType.LIMIT,
@@ -310,6 +310,12 @@ async def _place_entry_with_stop(
         orders=[
             NewOrder(
                 time_in_force=OrderTimeInForce.GTC,
+                order_type=OrderType.LIMIT,
+                legs=[closing_leg],
+                price=Decimal(str(take_profit_price)),
+            ),
+            NewOrder(
+                time_in_force=OrderTimeInForce.GTC,
                 order_type=OrderType.STOP,
                 legs=[closing_leg],
                 stop_trigger=Decimal(str(stop_loss_price)),
@@ -317,19 +323,19 @@ async def _place_entry_with_stop(
         ],
     )
 
-    response = await _account.place_complex_order(_session, oto, dry_run=False)
+    response = await _account.place_complex_order(_session, bracket, dry_run=False)
     order_id = str(getattr(response, "id", "unknown"))
-    logger.info("OTO order placed (entry + stop): %s", order_id)
+    logger.info("Bracket order placed (entry + SL + TP): %s", order_id)
 
     return OrderResult(
         success=True, order_id=order_id, stop_order_id=order_id,
         option_symbol=option_symbol,
         contracts=num_contracts, total_cost=total_cost,
-        stop_loss_price=stop_loss_price, take_profit_price=0.0,
+        stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
         message=(
             f"Bought {num_contracts}x {alert.ticker} ${alert.strike} "
             f"{alert.option_type} exp {alert.expiration} @ ${alert.entry_price} "
-            f"| SL @ ${stop_loss_price} | TP: awaiting trim alert"
+            f"| SL @ ${stop_loss_price} | TP @ ${take_profit_price} (or trim alert)"
         ),
     )
 
