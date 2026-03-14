@@ -299,31 +299,30 @@ async def _place_entry_with_stop(
     alert, option, opening_leg, closing_leg, option_symbol,
     num_contracts, total_cost, stop_loss_price,
 ) -> OrderResult:
-    """Place entry buy + standalone GTC stop-loss (no take-profit). TP via trim alert."""
-    # 1. Place entry order
-    entry_order = NewOrder(
-        time_in_force=OrderTimeInForce.DAY,
-        order_type=OrderType.LIMIT,
-        legs=[opening_leg],
-        price=Decimal(str(-alert.entry_price)),
+    """Place OTO order: entry triggers stop-loss (no take-profit). TP via trim alert."""
+    oto = NewComplexOrder(
+        trigger_order=NewOrder(
+            time_in_force=OrderTimeInForce.DAY,
+            order_type=OrderType.LIMIT,
+            legs=[opening_leg],
+            price=Decimal(str(-alert.entry_price)),
+        ),
+        orders=[
+            NewOrder(
+                time_in_force=OrderTimeInForce.GTC,
+                order_type=OrderType.STOP,
+                legs=[closing_leg],
+                stop_trigger=Decimal(str(stop_loss_price)),
+            ),
+        ],
     )
-    entry_resp = await _account.place_order(_session, entry_order, dry_run=False)
-    entry_id = str(getattr(entry_resp, "id", "unknown"))
-    logger.info("Entry order placed: %s", entry_id)
 
-    # 2. Place standalone stop-loss (GTC)
-    stop_order = NewOrder(
-        time_in_force=OrderTimeInForce.GTC,
-        order_type=OrderType.STOP,
-        legs=[closing_leg],
-        stop_trigger=Decimal(str(stop_loss_price)),
-    )
-    stop_resp = await _account.place_order(_session, stop_order, dry_run=False)
-    stop_id = str(getattr(stop_resp, "id", "unknown"))
-    logger.info("Stop-loss order placed: %s (trigger $%.2f)", stop_id, stop_loss_price)
+    response = await _account.place_complex_order(_session, oto, dry_run=False)
+    order_id = str(getattr(response, "id", "unknown"))
+    logger.info("OTO order placed (entry + stop): %s", order_id)
 
     return OrderResult(
-        success=True, order_id=entry_id, stop_order_id=stop_id,
+        success=True, order_id=order_id, stop_order_id=order_id,
         option_symbol=option_symbol,
         contracts=num_contracts, total_cost=total_cost,
         stop_loss_price=stop_loss_price, take_profit_price=0.0,
