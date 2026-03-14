@@ -79,6 +79,38 @@ async def on_ready():
         logger.info("Skipping Tastytrade login in paper-trade mode")
 
 
+def _extract_text(message: discord.Message) -> str:
+    """Extract alert text from a message, including forwarded messages.
+
+    Discord forwarded messages store the original content in message_snapshots
+    or embeds rather than message.content.
+    """
+    # Regular message — use content directly
+    text = message.content.strip()
+    if text:
+        return text
+
+    # Forwarded messages — check message_snapshots (Discord 2024+ forwarding)
+    snapshots = getattr(message, "message_snapshots", None)
+    if snapshots:
+        for snapshot in snapshots:
+            snap_msg = getattr(snapshot, "message", snapshot)
+            snap_content = getattr(snap_msg, "content", "")
+            if snap_content and snap_content.strip():
+                logger.info("Extracted text from forwarded message snapshot")
+                return snap_content.strip()
+
+    # Fallback — check embeds (some bots/forwards use embeds)
+    for embed in message.embeds:
+        if embed.description:
+            logger.info("Extracted text from embed description")
+            return embed.description.strip()
+        if embed.title:
+            return embed.title.strip()
+
+    return ""
+
+
 @client.event
 async def on_message(message: discord.Message):
     if message.author == client.user:
@@ -87,7 +119,7 @@ async def on_message(message: discord.Message):
     if message.channel.id not in _all_monitored_channels():
         return
 
-    text = message.content.strip()
+    text = _extract_text(message)
     if not text:
         return
 
