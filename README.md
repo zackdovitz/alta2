@@ -44,10 +44,35 @@ Monitors Discord channels for options trading alerts and automatically places or
    # Edit .env with your credentials
    ```
 
-5. **Run:**
+5. **Run locally:**
    ```bash
    python3 main.py
    ```
+
+### Running on GitHub Actions (no local install needed)
+
+1. Push this repo to GitHub
+2. Go to **Settings → Secrets and variables → Actions**
+3. Add these **Repository secrets**:
+   - `DISCORD_BOT_TOKEN`
+   - `DISCORD_CHANNEL_IDS` (e.g. `1482383137336983634`)
+   - `TT_CLIENT_SECRET`
+   - `TT_REFRESH_TOKEN`
+   - `TT_ACCOUNT_NUMBER`
+   - `PROFIT_CHANNEL_IDS` (optional)
+4. Optionally add **Repository variables** (not secrets) for settings:
+   - `RISK_PER_TRADE_PCT` (default: `1.0`)
+   - `STOP_LOSS_PCT` (default: `25.0`)
+   - `TAKE_PROFIT_PCT` (default: `30.0`)
+   - `EXIT_MODE` (default: `manual`)
+   - `PAPER_TRADE` (default: `true`)
+5. Go to **Actions → Run Trading Bot → Run workflow**
+
+The bot runs for 5.5 hours per job and auto-restarts via cron every 6 hours.
+There may be a brief gap (~30 min) during restarts when the bot is offline.
+
+> **Note:** GitHub Actions is great for testing but has a 6-hour job limit.
+> For 24/7 uptime, consider Railway or Render (free tier) which deploy directly from your repo.
 
 ## Exit Modes
 
