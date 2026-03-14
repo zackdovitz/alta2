@@ -159,15 +159,15 @@ def _extract_strike(text: str, ticker: str) -> float | None:
 
 def _extract_entry_price(text: str) -> float | None:
     """Extract the price to pay per contract."""
-    # Try "for $PRICE" or "@ $PRICE" or "at $PRICE"
+    # Try "for $PRICE" or "@ $PRICE" or "at $PRICE" (handles $.58, $1.20, $2, etc.)
     match = re.search(
-        r"(?:FOR|@|AT)\s*\$?(\d+(?:\.\d+)?)", text, re.IGNORECASE
+        r"(?:FOR|@|AT)\s*\$?(\.?\d+(?:\.\d+)?)", text, re.IGNORECASE
     )
     if match:
         return float(match.group(1))
 
     # Try "PRICE debit" or "PRICE premium"
-    match = re.search(r"\$?(\d+\.\d+)\s*(?:DEBIT|PREMIUM|CREDIT)", text)
+    match = re.search(r"\$?(\.?\d+(?:\.\d+)?)\s*(?:DEBIT|PREMIUM|CREDIT)", text)
     if match:
         return float(match.group(1))
 
