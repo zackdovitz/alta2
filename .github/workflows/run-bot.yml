@@ -1,0 +1,43 @@
+name: Run Trading Bot
+
+on:
+  # Auto-restart every 5.5 hours to stay within GitHub's 6-hour limit
+  schedule:
+    - cron: '0 */6 * * *'
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330  # 5.5 hours
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create .env
+        run: |
+          cat <<EOF > .env
+          DISCORD_BOT_TOKEN=${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_IDS=${{ secrets.DISCORD_CHANNEL_IDS }}
+          PROFIT_CHANNEL_IDS=${{ secrets.PROFIT_CHANNEL_IDS }}
+          TT_CLIENT_SECRET=${{ secrets.TT_CLIENT_SECRET }}
+          TT_REFRESH_TOKEN=${{ secrets.TT_REFRESH_TOKEN }}
+          TT_ACCOUNT_NUMBER=${{ secrets.TT_ACCOUNT_NUMBER }}
+          RISK_PER_TRADE_PCT=${{ vars.RISK_PER_TRADE_PCT || '1.0' }}
+          STOP_LOSS_PCT=${{ vars.STOP_LOSS_PCT || '25.0' }}
+          TAKE_PROFIT_PCT=${{ vars.TAKE_PROFIT_PCT || '30.0' }}
+          EXIT_MODE=${{ vars.EXIT_MODE || 'manual' }}
+          PAPER_TRADE=${{ vars.PAPER_TRADE || 'true' }}
+          EOF
+
+      - name: Run bot
+        run: python main.py

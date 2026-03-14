@@ -1,0 +1,10 @@
+{
+  "name": "discord-trading-alerts",
+  "version": "1.0.0",
+  "description": "Discord options trading alerts plugin with automatic order placement",
+  "private": true,
+  "scripts": {
+    "start": "python3 main.py",
+    "install-deps": "pip install -r requirements.txt"
+  }
+}
