@@ -175,13 +175,21 @@ def _extract_entry_price(text: str) -> float | None:
 
 
 def _extract_expiration(text: str) -> str:
-    """Extract expiration date. Defaults to nearest Friday if 'weekly' or not found."""
+    """Extract expiration date from alert text.
+
+    Priority:
+      1. "0DTE" / "0 DTE" → today
+      2. Explicit date (3/15, 03/15/25, 2025-03-15) → that date
+      3. "weekly" / "weeklies" → this Friday
+      4. Day name ("Friday", "Mon") → the upcoming occurrence
+      5. No date info → this Friday (most common options expiry)
+    """
     upper = text.upper()
     today = datetime.now()
 
-    # Check for "weekly" or "weeklies" — use the coming Friday
-    if re.search(r"\bWEEKL(?:Y|IES)\b", upper):
-        return _next_friday(today)
+    # 0DTE = expiring today
+    if re.search(r"\b0\s*DTE\b", upper):
+        return today.strftime("%Y-%m-%d")
 
     # Try explicit date formats: 3/15, 03/15, 3/15/25, 03/15/2025, 2025-03-15
     match = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", text)
@@ -203,6 +211,10 @@ def _extract_expiration(text: str) -> str:
     if match:
         return match.group(0)
 
+    # Check for "weekly" or "weeklies" — this Friday
+    if re.search(r"\bWEEKL(?:Y|IES)\b", upper):
+        return _this_friday(today)
+
     # Check for day names
     day_map = {
         "MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2,
@@ -217,14 +229,18 @@ def _extract_expiration(text: str) -> str:
             target = today + timedelta(days=days_ahead)
             return target.strftime("%Y-%m-%d")
 
-    # Default: next Friday (most common options expiry)
-    return _next_friday(today)
+    # Default: this Friday (most common options expiry)
+    return _this_friday(today)
 
 
-def _next_friday(from_date: datetime) -> str:
-    days_ahead = (4 - from_date.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
+def _this_friday(from_date: datetime) -> str:
+    """Return Friday of the current week. If today is Friday, return today.
+    If today is Saturday/Sunday, return next Friday."""
+    weekday = from_date.weekday()
+    if weekday <= 4:  # Mon-Fri
+        days_ahead = 4 - weekday  # 0 if already Friday
+    else:  # Sat=5, Sun=6
+        days_ahead = 4 + (7 - weekday)
     friday = from_date + timedelta(days=days_ahead)
     return friday.strftime("%Y-%m-%d")
 
