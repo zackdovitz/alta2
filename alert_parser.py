@@ -58,7 +58,7 @@ def parse_alert(text: str) -> ParsedAlert | None:
 
     option_type = _extract_option_type(cleaned)
     if not option_type:
-        return None
+        option_type = "call"  # Default to call if not specified
 
     strike = _extract_strike(cleaned, ticker)
     if strike is None:
@@ -243,6 +243,33 @@ def _this_friday(from_date: datetime) -> str:
         days_ahead = 4 + (7 - weekday)
     friday = from_date + timedelta(days=days_ahead)
     return friday.strftime("%Y-%m-%d")
+
+
+def partial_parse(text: str) -> list[str] | None:
+    """Check if text looks like a trading alert but is missing fields.
+
+    Returns a list of missing field names if it looks like a partial alert,
+    or None if it doesn't look like a trading alert at all.
+    """
+    cleaned = text.upper()
+    ticker = _extract_ticker(cleaned)
+    if not ticker:
+        # Doesn't look like a trading alert at all
+        return None
+
+    missing = []
+    strike = _extract_strike(cleaned, ticker)
+    if strike is None:
+        missing.append("strike price")
+
+    entry_price = _extract_entry_price(cleaned)
+    if entry_price is None:
+        missing.append("entry price")
+
+    if not missing:
+        return None  # Has all required fields, shouldn't reach here
+
+    return missing
 
 
 # --- Trim/profit alert parsing ---

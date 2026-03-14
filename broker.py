@@ -60,12 +60,12 @@ class SellResult:
     message: str
 
 
-def login() -> bool:
+async def login() -> bool:
     """Authenticate with Tastytrade via OAuth. Returns True on success."""
     global _session, _account
     try:
         _session = Session(Config.TT_CLIENT_SECRET, Config.TT_REFRESH_TOKEN)
-        _account = Account.get(_session, Config.TT_ACCOUNT_NUMBER)
+        _account = await Account.get(_session, Config.TT_ACCOUNT_NUMBER)
         logger.info("Tastytrade login successful for account %s", Config.TT_ACCOUNT_NUMBER)
         return True
     except Exception as e:
@@ -73,20 +73,20 @@ def login() -> bool:
         return False
 
 
-def get_account_value() -> float:
+async def get_account_value() -> float:
     """Get net liquidating value of the account."""
     if not _session or not _account:
         raise RuntimeError("Not logged in to Tastytrade")
-    balance = _account.get_balances(_session)
+    balance = await _account.get_balances(_session)
     return float(balance.net_liquidating_value)
 
 
-def _find_option(alert: ParsedAlert) -> Option | None:
+async def _find_option(alert: ParsedAlert) -> Option | None:
     """Look up the specific option contract from the chain."""
     if not _session:
         raise RuntimeError("Not logged in to Tastytrade")
 
-    chain = get_option_chain(_session, alert.ticker)
+    chain = await get_option_chain(_session, alert.ticker)
     exp_date = date.fromisoformat(alert.expiration)
 
     if exp_date not in chain:
@@ -143,7 +143,7 @@ def calculate_position(
     return num_contracts, stop_loss_price, take_profit_price
 
 
-def place_order(alert: ParsedAlert) -> OrderResult:
+async def place_order(alert: ParsedAlert) -> OrderResult:
     """Place an order based on the configured exit mode.
 
     - "auto" mode:   OTOCO (entry + OCO stop-loss/take-profit)
@@ -159,7 +159,7 @@ def place_order(alert: ParsedAlert) -> OrderResult:
     if Config.PAPER_TRADE:
         account_value = 25000.0
     else:
-        account_value = get_account_value()
+        account_value = await get_account_value()
 
     logger.info("Account value: $%.2f", account_value)
 
@@ -214,7 +214,7 @@ def place_order(alert: ParsedAlert) -> OrderResult:
 
     # --- Live order ---
     try:
-        option = _find_option(alert)
+        option = await _find_option(alert)
         if option is None:
             return OrderResult(
                 success=False, order_id=None, stop_order_id=None, option_symbol=None,
@@ -230,12 +230,12 @@ def place_order(alert: ParsedAlert) -> OrderResult:
         option_symbol = option.symbol
 
         if is_manual:
-            return _place_entry_with_stop(
+            return await _place_entry_with_stop(
                 alert, option, opening_leg, closing_leg, option_symbol,
                 num_contracts, total_cost, stop_loss_price,
             )
         else:
-            return _place_otoco(
+            return await _place_otoco(
                 alert, option, opening_leg, closing_leg, option_symbol,
                 num_contracts, total_cost, stop_loss_price, take_profit_price,
             )
@@ -250,7 +250,7 @@ def place_order(alert: ParsedAlert) -> OrderResult:
         )
 
 
-def _place_otoco(
+async def _place_otoco(
     alert, option, opening_leg, closing_leg, option_symbol,
     num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
@@ -278,7 +278,7 @@ def _place_otoco(
         ],
     )
 
-    response = _account.place_complex_order(_session, otoco, dry_run=False)
+    response = await _account.place_complex_order(_session, otoco, dry_run=False)
     order_id = str(getattr(response, "id", "unknown"))
     logger.info("OTOCO order placed: %s", order_id)
 
@@ -295,7 +295,7 @@ def _place_otoco(
     )
 
 
-def _place_entry_with_stop(
+async def _place_entry_with_stop(
     alert, option, opening_leg, closing_leg, option_symbol,
     num_contracts, total_cost, stop_loss_price,
 ) -> OrderResult:
@@ -307,7 +307,7 @@ def _place_entry_with_stop(
         legs=[opening_leg],
         price=Decimal(str(-alert.entry_price)),
     )
-    entry_resp = _account.place_order(_session, entry_order, dry_run=False)
+    entry_resp = await _account.place_order(_session, entry_order, dry_run=False)
     entry_id = str(getattr(entry_resp, "id", "unknown"))
     logger.info("Entry order placed: %s", entry_id)
 
@@ -318,7 +318,7 @@ def _place_entry_with_stop(
         legs=[closing_leg],
         stop_trigger=Decimal(str(stop_loss_price)),
     )
-    stop_resp = _account.place_order(_session, stop_order, dry_run=False)
+    stop_resp = await _account.place_order(_session, stop_order, dry_run=False)
     stop_id = str(getattr(stop_resp, "id", "unknown"))
     logger.info("Stop-loss order placed: %s (trigger $%.2f)", stop_id, stop_loss_price)
 
@@ -335,21 +335,21 @@ def _place_entry_with_stop(
     )
 
 
-def get_order_status(order_id: str) -> str | None:
+async def get_order_status(order_id: str) -> str | None:
     """Get the status of an order. Returns status string or None if not found."""
     if Config.PAPER_TRADE:
         return "Filled"
     if not _session or not _account:
         return None
     try:
-        order = _account.get_order(_session, order_id)
+        order = await _account.get_order(_session, order_id)
         return str(getattr(order, "status", "Unknown"))
     except Exception as e:
         logger.warning("Could not get status for order %s: %s", order_id, e)
         return None
 
 
-def cancel_order(order_id: str) -> bool:
+async def cancel_order(order_id: str) -> bool:
     """Cancel an open order. Returns True on success."""
     if Config.PAPER_TRADE:
         logger.info("[PAPER] Would cancel order %s", order_id)
@@ -357,7 +357,7 @@ def cancel_order(order_id: str) -> bool:
     if not _session or not _account:
         return False
     try:
-        _account.delete_order(_session, order_id)
+        await _account.delete_order(_session, order_id)
         logger.info("Cancelled order %s", order_id)
         return True
     except Exception as e:
@@ -365,7 +365,7 @@ def cancel_order(order_id: str) -> bool:
         return False
 
 
-def sell_position(
+async def sell_position(
     option_symbol: str,
     contracts: int,
     stop_order_id: str | None = None,
@@ -394,13 +394,13 @@ def sell_position(
         # Cancel the standing stop-loss order first
         if stop_order_id:
             try:
-                _account.delete_order(_session, stop_order_id)
+                await _account.delete_order(_session, stop_order_id)
                 logger.info("Cancelled stop-loss order %s", stop_order_id)
             except Exception as e:
                 logger.warning("Could not cancel stop order %s: %s", stop_order_id, e)
 
         # Look up the option to build a sell leg
-        option = Option.get(_session, option_symbol)
+        option = await Option.get(_session, option_symbol)
         closing_leg = option.build_leg(Decimal(contracts), OrderAction.SELL_TO_CLOSE)
 
         sell_order = NewOrder(
@@ -408,7 +408,7 @@ def sell_position(
             order_type=OrderType.MARKET,
             legs=[closing_leg],
         )
-        _account.place_order(_session, sell_order, dry_run=False)
+        await _account.place_order(_session, sell_order, dry_run=False)
         logger.info("Sold %d contracts of %s", contracts, option_symbol)
 
         return SellResult(
