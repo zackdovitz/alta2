@@ -78,7 +78,7 @@ async def get_account_value() -> float:
     if not _session or not _account:
         raise RuntimeError("Not logged in to Tastytrade")
     balance = await _account.get_balances(_session)
-    return float(balance.net_liquidating_value)
+    return float(balance.derivative_buying_power)
 
 
 async def _find_option(alert: ParsedAlert) -> Option | None:
