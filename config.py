@@ -23,6 +23,17 @@ class Config:
     STOP_LOSS_PCT: float = float(os.getenv("STOP_LOSS_PCT", "25.0"))
     TAKE_PROFIT_PCT: float = float(os.getenv("TAKE_PROFIT_PCT", "30.0"))
 
+    # Exit mode: "auto" = OTOCO with fixed TP, "manual" = stop-loss only, TP via trim alert
+    EXIT_MODE: str = os.getenv("EXIT_MODE", "manual")
+
+    # Optional separate channel(s) for trim/profit alerts (comma-separated IDs)
+    # If empty, trim alerts are detected in the same alert channels
+    PROFIT_CHANNEL_IDS: list[int] = [
+        int(cid.strip())
+        for cid in os.getenv("PROFIT_CHANNEL_IDS", "").split(",")
+        if cid.strip()
+    ]
+
     # Paper trading mode
     PAPER_TRADE: bool = os.getenv("PAPER_TRADE", "true").lower() == "true"
 

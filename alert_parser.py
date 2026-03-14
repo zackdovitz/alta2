@@ -1,18 +1,20 @@
 """
 Flexible parser for Discord options trading alerts.
 
-Handles varying formats by extracting key components:
-  - Ticker symbol (e.g. RKLB, AAPL, SPY)
-  - Strike price (e.g. 71, 150.50)
-  - Option type (call or put)
-  - Expiration date (weekly, monthly, or explicit date)
-  - Entry price (the price to pay per contract)
+Handles two types of alerts:
 
-Example alerts it can parse:
-  "$RKLB - Lotto size - weekly $71 calls for $1.20  @everyone $alert"
-  "BTO AAPL 150C 3/15 @ 2.50"
-  "TSLA 800 puts 1/19 for $3.40"
-  "Buying SPY $450 calls expiring Friday at $1.05"
+1. **Entry alerts** — buy signals with ticker, strike, type, expiration, price:
+   "$RKLB - Lotto size - weekly $71 calls for $1.20  @everyone $alert"
+   "BTO AAPL 150C 3/15 @ 2.50"
+   "TSLA 800 puts 1/19 for $3.40"
+   "Buying SPY $450 calls expiring Friday at $1.05"
+
+2. **Trim/profit alerts** — signals to sell an open position:
+   "Trim RKLB calls"
+   "Take profit on AAPL"
+   "Close TSLA position"
+   "Selling half SPY calls"
+   "Lock in gains on RKLB"
 """
 
 import re
@@ -27,6 +29,14 @@ class ParsedAlert:
     option_type: str  # "call" or "put"
     expiration: str  # ISO date string YYYY-MM-DD
     entry_price: float
+    raw_text: str
+
+
+@dataclass
+class TrimAlert:
+    """A signal to sell/trim an open position."""
+    ticker: str
+    sell_all: bool  # True = close entire position, False = trim half
     raw_text: str
 
 
@@ -217,3 +227,54 @@ def _next_friday(from_date: datetime) -> str:
         days_ahead = 7
     friday = from_date + timedelta(days=days_ahead)
     return friday.strftime("%Y-%m-%d")
+
+
+# --- Trim/profit alert parsing ---
+
+# Patterns that indicate "sell/trim this position"
+_TRIM_PATTERNS = [
+    r"\bTRIM\b",
+    r"\bTAKE\s+PROFIT\b",
+    r"\bLOCK\s+IN\b",
+    r"\bCLOSE\b.*\bPOSITION\b",
+    r"\bSELL(?:ING)?\b",
+    r"\bSTC\b",          # Sell To Close
+    r"\bCLOSING\b",
+    r"\bEXIT\b",
+    r"\bCASH\s*(?:OUT|IN)\b",
+    r"\bSCALE\s+OUT\b",
+    r"\bRING\s+.*REGISTER\b",
+]
+
+# Patterns that indicate "sell only half / partial"
+_PARTIAL_PATTERNS = [
+    r"\bHALF\b",
+    r"\bPARTIAL\b",
+    r"\bSOME\b",
+    r"\bTRIM\b",       # "trim" typically implies partial, not full close
+    r"\bSCALE\s+OUT\b",
+]
+
+
+def parse_trim_alert(text: str) -> TrimAlert | None:
+    """Parse a message as a trim/profit-taking alert.
+
+    Returns None if the message doesn't look like a trim signal.
+    """
+    upper = text.upper()
+
+    # Must match at least one trim pattern
+    is_trim = any(re.search(p, upper) for p in _TRIM_PATTERNS)
+    if not is_trim:
+        return None
+
+    # Extract ticker
+    ticker = _extract_ticker(upper)
+    if not ticker:
+        return None
+
+    # Determine if it's a partial trim or full close
+    is_partial = any(re.search(p, upper) for p in _PARTIAL_PATTERNS)
+    sell_all = not is_partial
+
+    return TrimAlert(ticker=ticker, sell_all=sell_all, raw_text=text)

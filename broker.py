@@ -1,11 +1,17 @@
 """
-Tastytrade broker integration for placing options orders with OCO exit orders.
+Tastytrade broker integration for placing options orders.
+
+Supports two exit modes:
+  - "auto":   OTOCO order (entry + OCO stop-loss/take-profit)
+  - "manual": Entry + standalone stop-loss only; take-profit triggered
+              by a Discord trim alert
 
 Uses the tastyware/tastytrade SDK to:
   - Authenticate via OAuth
   - Get account value for position sizing
   - Look up option contracts
-  - Place OTOCO orders (entry + OCO stop-loss/take-profit)
+  - Place OTOCO or entry+stop orders
+  - Sell positions on trim alerts
 """
 
 import logging
@@ -38,10 +44,19 @@ _account: Account | None = None
 class OrderResult:
     success: bool
     order_id: str | None
+    stop_order_id: str | None  # standalone stop order ID (manual TP mode)
+    option_symbol: str | None  # for selling later
     contracts: int
     total_cost: float
     stop_loss_price: float
-    take_profit_price: float
+    take_profit_price: float  # 0 in manual mode
+    message: str
+
+
+@dataclass
+class SellResult:
+    success: bool
+    contracts_sold: int
     message: str
 
 
@@ -75,7 +90,6 @@ def _find_option(alert: ParsedAlert) -> Option | None:
     exp_date = date.fromisoformat(alert.expiration)
 
     if exp_date not in chain:
-        # Find the closest expiration
         available = sorted(chain.keys())
         closest = min(available, key=lambda d: abs((d - exp_date).days), default=None)
         if closest is None:
@@ -110,22 +124,11 @@ def calculate_position(
 ) -> tuple[int, float, float]:
     """Calculate number of contracts, stop-loss price, and take-profit price.
 
-    Args:
-        account_value: Total account value in dollars.
-        entry_price: Price per contract (premium).
-        risk_pct: Max percentage of account to risk (e.g. 1.0 = 1%).
-        stop_loss_pct: Stop-loss as percentage loss (e.g. 25.0 = sell at 25% loss).
-        take_profit_pct: Take-profit as percentage gain (e.g. 30.0 = sell at 30% gain).
-
     Returns:
         (num_contracts, stop_loss_price, take_profit_price)
     """
     max_risk_dollars = account_value * (risk_pct / 100.0)
-
-    # Cost per contract = premium * 100 shares
     cost_per_contract = entry_price * 100
-
-    # The amount we'd lose per contract if stop loss hits
     loss_per_contract = cost_per_contract * (stop_loss_pct / 100.0)
 
     if loss_per_contract <= 0:
@@ -141,17 +144,20 @@ def calculate_position(
 
 
 def place_order(alert: ParsedAlert) -> OrderResult:
-    """Place an OTOCO order: entry buy + OCO (stop-loss, take-profit)."""
+    """Place an order based on the configured exit mode.
+
+    - "auto" mode:   OTOCO (entry + OCO stop-loss/take-profit)
+    - "manual" mode:  Entry buy + standalone stop-loss; TP via Discord trim alert
+    """
     if not Config.PAPER_TRADE and (not _session or not _account):
         return OrderResult(
-            success=False, order_id=None, contracts=0, total_cost=0,
-            stop_loss_price=0, take_profit_price=0,
+            success=False, order_id=None, stop_order_id=None, option_symbol=None,
+            contracts=0, total_cost=0, stop_loss_price=0, take_profit_price=0,
             message="Not logged in to Tastytrade",
         )
 
-    # Calculate position size
     if Config.PAPER_TRADE:
-        account_value = 25000.0  # Default paper account value
+        account_value = 25000.0
     else:
         account_value = get_account_value()
 
@@ -167,8 +173,8 @@ def place_order(alert: ParsedAlert) -> OrderResult:
 
     if num_contracts == 0:
         return OrderResult(
-            success=False, order_id=None, contracts=0, total_cost=0,
-            stop_loss_price=0, take_profit_price=0,
+            success=False, order_id=None, stop_order_id=None, option_symbol=None,
+            contracts=0, total_cost=0, stop_loss_price=0, take_profit_price=0,
             message=(
                 f"Cannot place order: account value ${account_value:.2f} with "
                 f"{Config.RISK_PER_TRADE_PCT}% risk "
@@ -178,88 +184,210 @@ def place_order(alert: ParsedAlert) -> OrderResult:
         )
 
     total_cost = num_contracts * alert.entry_price * 100
+    is_manual = Config.EXIT_MODE == "manual"
+    mode_label = "manual TP" if is_manual else "auto OTOCO"
 
     logger.info(
-        "Placing OTOCO: %d contracts of %s $%.2f %s exp %s @ $%.2f "
-        "(SL $%.2f / TP $%.2f)",
-        num_contracts, alert.ticker, alert.strike, alert.option_type,
-        alert.expiration, alert.entry_price, stop_loss_price, take_profit_price,
+        "Placing %s: %d contracts of %s $%.2f %s exp %s @ $%.2f (SL $%.2f%s)",
+        mode_label, num_contracts, alert.ticker, alert.strike, alert.option_type,
+        alert.expiration, alert.entry_price, stop_loss_price,
+        "" if is_manual else f" / TP ${take_profit_price}",
     )
 
+    # --- Paper trade ---
     if Config.PAPER_TRADE:
         logger.info("[PAPER TRADE] Order not sent to broker")
+        tp_info = f" | TP @ ${take_profit_price}" if not is_manual else " | TP: awaiting trim alert"
         return OrderResult(
             success=True, order_id="PAPER-TRADE",
+            stop_order_id="PAPER-STOP" if is_manual else None,
+            option_symbol=f"PAPER-{alert.ticker}",
             contracts=num_contracts, total_cost=total_cost,
-            stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=0.0 if is_manual else take_profit_price,
             message=(
                 f"[PAPER] Would buy {num_contracts}x {alert.ticker} "
                 f"${alert.strike} {alert.option_type} exp {alert.expiration} "
-                f"@ ${alert.entry_price} | SL @ ${stop_loss_price} | "
-                f"TP @ ${take_profit_price}"
+                f"@ ${alert.entry_price} | SL @ ${stop_loss_price}{tp_info}"
             ),
         )
 
-    # --- Live OTOCO order via Tastytrade ---
+    # --- Live order ---
     try:
         option = _find_option(alert)
         if option is None:
             return OrderResult(
-                success=False, order_id=None,
+                success=False, order_id=None, stop_order_id=None, option_symbol=None,
                 contracts=num_contracts, total_cost=total_cost,
-                stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=0.0 if is_manual else take_profit_price,
                 message=f"Could not find option contract for {alert.ticker} "
                         f"${alert.strike} {alert.option_type} exp {alert.expiration}",
             )
 
         opening_leg = option.build_leg(Decimal(num_contracts), OrderAction.BUY_TO_OPEN)
         closing_leg = option.build_leg(Decimal(num_contracts), OrderAction.SELL_TO_CLOSE)
+        option_symbol = option.symbol
 
-        # OTOCO: entry triggers an OCO pair (take-profit limit + stop-loss)
-        otoco = NewComplexOrder(
-            trigger_order=NewOrder(
-                time_in_force=OrderTimeInForce.DAY,
-                order_type=OrderType.LIMIT,
-                legs=[opening_leg],
-                price=Decimal(str(-alert.entry_price)),  # negative = debit
-            ),
-            orders=[
-                # Take-profit: limit sell at gain target
-                NewOrder(
-                    time_in_force=OrderTimeInForce.GTC,
-                    order_type=OrderType.LIMIT,
-                    legs=[closing_leg],
-                    price=Decimal(str(take_profit_price)),  # positive = credit
-                ),
-                # Stop-loss: stop sell at loss target
-                NewOrder(
-                    time_in_force=OrderTimeInForce.GTC,
-                    order_type=OrderType.STOP,
-                    legs=[closing_leg],
-                    stop_trigger=Decimal(str(stop_loss_price)),
-                ),
-            ],
-        )
-
-        response = _account.place_complex_order(_session, otoco, dry_run=False)
-        order_id = str(getattr(response, "id", "unknown"))
-        logger.info("OTOCO order placed: %s", order_id)
-
-        return OrderResult(
-            success=True, order_id=order_id,
-            contracts=num_contracts, total_cost=total_cost,
-            stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
-            message=(
-                f"Bought {num_contracts}x {alert.ticker} ${alert.strike} "
-                f"{alert.option_type} exp {alert.expiration} @ ${alert.entry_price} "
-                f"| SL @ ${stop_loss_price} | TP @ ${take_profit_price}"
-            ),
-        )
+        if is_manual:
+            return _place_entry_with_stop(
+                alert, option, opening_leg, closing_leg, option_symbol,
+                num_contracts, total_cost, stop_loss_price,
+            )
+        else:
+            return _place_otoco(
+                alert, option, opening_leg, closing_leg, option_symbol,
+                num_contracts, total_cost, stop_loss_price, take_profit_price,
+            )
     except Exception as e:
         logger.error("Order failed: %s", e)
         return OrderResult(
-            success=False, order_id=None,
+            success=False, order_id=None, stop_order_id=None, option_symbol=None,
             contracts=num_contracts, total_cost=total_cost,
-            stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=0.0 if is_manual else take_profit_price,
             message=f"Order failed: {e}",
+        )
+
+
+def _place_otoco(
+    alert, option, opening_leg, closing_leg, option_symbol,
+    num_contracts, total_cost, stop_loss_price, take_profit_price,
+) -> OrderResult:
+    """Place an OTOCO order: entry triggers OCO (take-profit + stop-loss)."""
+    otoco = NewComplexOrder(
+        trigger_order=NewOrder(
+            time_in_force=OrderTimeInForce.DAY,
+            order_type=OrderType.LIMIT,
+            legs=[opening_leg],
+            price=Decimal(str(-alert.entry_price)),
+        ),
+        orders=[
+            NewOrder(
+                time_in_force=OrderTimeInForce.GTC,
+                order_type=OrderType.LIMIT,
+                legs=[closing_leg],
+                price=Decimal(str(take_profit_price)),
+            ),
+            NewOrder(
+                time_in_force=OrderTimeInForce.GTC,
+                order_type=OrderType.STOP,
+                legs=[closing_leg],
+                stop_trigger=Decimal(str(stop_loss_price)),
+            ),
+        ],
+    )
+
+    response = _account.place_complex_order(_session, otoco, dry_run=False)
+    order_id = str(getattr(response, "id", "unknown"))
+    logger.info("OTOCO order placed: %s", order_id)
+
+    return OrderResult(
+        success=True, order_id=order_id, stop_order_id=None,
+        option_symbol=option_symbol,
+        contracts=num_contracts, total_cost=total_cost,
+        stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
+        message=(
+            f"Bought {num_contracts}x {alert.ticker} ${alert.strike} "
+            f"{alert.option_type} exp {alert.expiration} @ ${alert.entry_price} "
+            f"| SL @ ${stop_loss_price} | TP @ ${take_profit_price}"
+        ),
+    )
+
+
+def _place_entry_with_stop(
+    alert, option, opening_leg, closing_leg, option_symbol,
+    num_contracts, total_cost, stop_loss_price,
+) -> OrderResult:
+    """Place entry buy + standalone GTC stop-loss (no take-profit). TP via trim alert."""
+    # 1. Place entry order
+    entry_order = NewOrder(
+        time_in_force=OrderTimeInForce.DAY,
+        order_type=OrderType.LIMIT,
+        legs=[opening_leg],
+        price=Decimal(str(-alert.entry_price)),
+    )
+    entry_resp = _account.place_order(_session, entry_order, dry_run=False)
+    entry_id = str(getattr(entry_resp, "id", "unknown"))
+    logger.info("Entry order placed: %s", entry_id)
+
+    # 2. Place standalone stop-loss (GTC)
+    stop_order = NewOrder(
+        time_in_force=OrderTimeInForce.GTC,
+        order_type=OrderType.STOP,
+        legs=[closing_leg],
+        stop_trigger=Decimal(str(stop_loss_price)),
+    )
+    stop_resp = _account.place_order(_session, stop_order, dry_run=False)
+    stop_id = str(getattr(stop_resp, "id", "unknown"))
+    logger.info("Stop-loss order placed: %s (trigger $%.2f)", stop_id, stop_loss_price)
+
+    return OrderResult(
+        success=True, order_id=entry_id, stop_order_id=stop_id,
+        option_symbol=option_symbol,
+        contracts=num_contracts, total_cost=total_cost,
+        stop_loss_price=stop_loss_price, take_profit_price=0.0,
+        message=(
+            f"Bought {num_contracts}x {alert.ticker} ${alert.strike} "
+            f"{alert.option_type} exp {alert.expiration} @ ${alert.entry_price} "
+            f"| SL @ ${stop_loss_price} | TP: awaiting trim alert"
+        ),
+    )
+
+
+def sell_position(
+    option_symbol: str,
+    contracts: int,
+    stop_order_id: str | None = None,
+) -> SellResult:
+    """Sell an open position (market order) and cancel its stop-loss if any.
+
+    Args:
+        option_symbol: The Tastytrade option symbol to sell.
+        contracts: Number of contracts to sell.
+        stop_order_id: If set, cancel this stop-loss order first.
+    """
+    if Config.PAPER_TRADE:
+        logger.info("[PAPER] Would sell %d contracts of %s", contracts, option_symbol)
+        return SellResult(
+            success=True, contracts_sold=contracts,
+            message=f"[PAPER] Sold {contracts}x {option_symbol}",
+        )
+
+    if not _session or not _account:
+        return SellResult(
+            success=False, contracts_sold=0,
+            message="Not logged in to Tastytrade",
+        )
+
+    try:
+        # Cancel the standing stop-loss order first
+        if stop_order_id:
+            try:
+                _account.delete_order(_session, stop_order_id)
+                logger.info("Cancelled stop-loss order %s", stop_order_id)
+            except Exception as e:
+                logger.warning("Could not cancel stop order %s: %s", stop_order_id, e)
+
+        # Look up the option to build a sell leg
+        option = Option.get(_session, option_symbol)
+        closing_leg = option.build_leg(Decimal(contracts), OrderAction.SELL_TO_CLOSE)
+
+        sell_order = NewOrder(
+            time_in_force=OrderTimeInForce.DAY,
+            order_type=OrderType.MARKET,
+            legs=[closing_leg],
+        )
+        _account.place_order(_session, sell_order, dry_run=False)
+        logger.info("Sold %d contracts of %s", contracts, option_symbol)
+
+        return SellResult(
+            success=True, contracts_sold=contracts,
+            message=f"Sold {contracts}x {option_symbol} at market",
+        )
+    except Exception as e:
+        logger.error("Sell failed: %s", e)
+        return SellResult(
+            success=False, contracts_sold=0,
+            message=f"Sell failed: {e}",
         )
