@@ -13,15 +13,18 @@ class Config:
         if cid.strip()
     ]
 
-    # Robinhood
-    RH_USERNAME: str = os.getenv("RH_USERNAME", "")
-    RH_PASSWORD: str = os.getenv("RH_PASSWORD", "")
-    RH_MFA_CODE: str = os.getenv("RH_MFA_CODE", "")
+    # Tastytrade OAuth
+    TT_CLIENT_SECRET: str = os.getenv("TT_CLIENT_SECRET", "")
+    TT_REFRESH_TOKEN: str = os.getenv("TT_REFRESH_TOKEN", "")
+    TT_ACCOUNT_NUMBER: str = os.getenv("TT_ACCOUNT_NUMBER", "")
 
-    # Risk management (adjustable — these are defaults)
+    # Risk management (adjustable at runtime via Discord commands)
     RISK_PER_TRADE_PCT: float = float(os.getenv("RISK_PER_TRADE_PCT", "1.0"))
     STOP_LOSS_PCT: float = float(os.getenv("STOP_LOSS_PCT", "25.0"))
     TAKE_PROFIT_PCT: float = float(os.getenv("TAKE_PROFIT_PCT", "30.0"))
 
     # Paper trading mode
     PAPER_TRADE: bool = os.getenv("PAPER_TRADE", "true").lower() == "true"
+
+    # Command prefix for Discord commands
+    COMMAND_PREFIX: str = "!"
