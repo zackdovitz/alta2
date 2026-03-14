@@ -135,7 +135,8 @@ def calculate_position(
         return 0, 0.0, 0.0
 
     num_contracts = int(max_risk_dollars / loss_per_contract)
-    num_contracts = max(num_contracts, 0)
+    # Always buy at least 1 contract if affordable
+    num_contracts = max(num_contracts, 1)
 
     stop_loss_price = round(entry_price * (1 - stop_loss_pct / 100.0), 2)
     take_profit_price = round(entry_price * (1 + take_profit_pct / 100.0), 2)
@@ -171,19 +172,18 @@ async def place_order(alert: ParsedAlert) -> OrderResult:
         take_profit_pct=Config.TAKE_PROFIT_PCT,
     )
 
-    if num_contracts == 0:
+    total_cost = num_contracts * alert.entry_price * 100
+
+    # Reject only if we can't afford even 1 contract
+    if total_cost > account_value:
         return OrderResult(
             success=False, order_id=None, stop_order_id=None, option_symbol=None,
-            contracts=0, total_cost=0, stop_loss_price=0, take_profit_price=0,
+            contracts=0, total_cost=0, stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
             message=(
-                f"Cannot place order: account value ${account_value:.2f} with "
-                f"{Config.RISK_PER_TRADE_PCT}% risk "
-                f"(${account_value * Config.RISK_PER_TRADE_PCT / 100:.2f}) is too small for "
-                f"{alert.ticker} at ${alert.entry_price} per contract"
+                f"Cannot place order: 1 contract of {alert.ticker} costs "
+                f"${alert.entry_price * 100:.2f} but buying power is ${account_value:.2f}"
             ),
         )
-
-    total_cost = num_contracts * alert.entry_price * 100
     is_manual = Config.EXIT_MODE == "manual"
     mode_label = "manual TP" if is_manual else "auto OTOCO"
 
