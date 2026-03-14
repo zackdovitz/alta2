@@ -24,9 +24,12 @@ Monitors Discord channels for options trading alerts and automatically places or
 2. **Create a Discord bot:**
    - Go to https://discord.com/developers/applications
    - Create a new application and add a bot
-   - Enable the **Message Content Intent** under Bot settings
+   - Enable the **Message Content Intent** under Privileged Gateway Intents
    - Copy the bot token
-   - Invite the bot to your server with "Read Messages" + "Send Messages" permissions
+   - Generate an invite link under **OAuth2 → URL Generator**:
+     - Scopes: check **bot**
+     - Bot Permissions: **View Channels** (under General), **Send Messages** and **Read Message History** (under Text)
+   - Open the generated URL to invite the bot to your server
 
 3. **Set up Tastytrade OAuth:**
    - Log in to tastytrade.com
