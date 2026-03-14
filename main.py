@@ -83,7 +83,7 @@ def _extract_text(message: discord.Message) -> str:
     """Extract alert text from a message, including forwarded messages.
 
     Discord forwarded messages store the original content in message_snapshots
-    or embeds rather than message.content.
+    rather than message.content.
     """
     # Regular message — use content directly
     text = message.content.strip()
@@ -93,21 +93,31 @@ def _extract_text(message: discord.Message) -> str:
     # Forwarded messages — check message_snapshots (Discord 2024+ forwarding)
     snapshots = getattr(message, "message_snapshots", None)
     if snapshots:
+        logger.info("Found %d message snapshot(s) in forwarded message", len(snapshots))
         for snapshot in snapshots:
-            snap_msg = getattr(snapshot, "message", snapshot)
-            snap_content = getattr(snap_msg, "content", "")
+            snap_content = getattr(snapshot, "content", "")
             if snap_content and snap_content.strip():
-                logger.info("Extracted text from forwarded message snapshot")
+                logger.info("Extracted text from forwarded message: %s", snap_content.strip())
                 return snap_content.strip()
 
     # Fallback — check embeds (some bots/forwards use embeds)
-    for embed in message.embeds:
-        if embed.description:
-            logger.info("Extracted text from embed description")
-            return embed.description.strip()
-        if embed.title:
-            return embed.title.strip()
+    if message.embeds:
+        logger.info("Found %d embed(s), checking for alert text", len(message.embeds))
+        for embed in message.embeds:
+            if embed.description:
+                logger.info("Extracted text from embed description: %s", embed.description.strip())
+                return embed.description.strip()
+            if embed.title:
+                return embed.title.strip()
 
+    # Log what we received for debugging
+    logger.info(
+        "Could not extract text from message. content=%r, snapshots=%s, embeds=%d, flags=%s",
+        message.content,
+        len(snapshots) if snapshots else 0,
+        len(message.embeds),
+        message.flags,
+    )
     return ""
 
 
