@@ -335,6 +335,36 @@ def _place_entry_with_stop(
     )
 
 
+def get_order_status(order_id: str) -> str | None:
+    """Get the status of an order. Returns status string or None if not found."""
+    if Config.PAPER_TRADE:
+        return "Filled"
+    if not _session or not _account:
+        return None
+    try:
+        order = _account.get_order(_session, order_id)
+        return str(getattr(order, "status", "Unknown"))
+    except Exception as e:
+        logger.warning("Could not get status for order %s: %s", order_id, e)
+        return None
+
+
+def cancel_order(order_id: str) -> bool:
+    """Cancel an open order. Returns True on success."""
+    if Config.PAPER_TRADE:
+        logger.info("[PAPER] Would cancel order %s", order_id)
+        return True
+    if not _session or not _account:
+        return False
+    try:
+        _account.delete_order(_session, order_id)
+        logger.info("Cancelled order %s", order_id)
+        return True
+    except Exception as e:
+        logger.error("Failed to cancel order %s: %s", order_id, e)
+        return False
+
+
 def sell_position(
     option_symbol: str,
     contracts: int,

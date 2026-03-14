@@ -1,8 +1,11 @@
 """
-In-memory tracker for open positions.
+In-memory tracker for open positions and pending orders.
 
 Tracks positions opened by the bot so it knows what to sell when a
 trim/profit alert arrives. Keyed by ticker symbol (uppercase).
+
+Also tracks pending orders (placed but not yet filled) so the user
+can view and cancel them.
 """
 
 import logging
@@ -28,8 +31,29 @@ class Position:
     opened_at: datetime = field(default_factory=datetime.now)
 
 
+@dataclass
+class PendingOrder:
+    """An order that has been placed but not yet filled."""
+    order_id: str
+    ticker: str
+    strike: float
+    option_type: str  # "call" or "put"
+    expiration: str  # YYYY-MM-DD
+    contracts: int
+    entry_price: float
+    total_cost: float
+    stop_loss_price: float
+    take_profit_price: float
+    option_symbol: str | None
+    stop_order_id: str | None
+    placed_at: datetime = field(default_factory=datetime.now)
+
+
 # Ticker -> list of positions (could have multiple entries on the same ticker)
 _positions: dict[str, list[Position]] = {}
+
+# order_id -> PendingOrder
+_pending_orders: dict[str, PendingOrder] = {}
 
 
 def add_position(position: Position) -> None:
@@ -69,3 +93,27 @@ def remove_all_positions(ticker: str) -> list[Position]:
     if removed:
         logger.info("Removed all %d position(s) for %s", len(removed), ticker)
     return removed
+
+
+# --- Pending order tracking ---
+
+def add_pending_order(order: PendingOrder) -> None:
+    _pending_orders[order.order_id] = order
+    logger.info("Tracking pending order %s: %s %dx $%.2f %s",
+                order.order_id, order.ticker, order.contracts,
+                order.strike, order.option_type)
+
+
+def get_pending_order(order_id: str) -> PendingOrder | None:
+    return _pending_orders.get(order_id)
+
+
+def get_all_pending_orders() -> dict[str, PendingOrder]:
+    return dict(_pending_orders)
+
+
+def remove_pending_order(order_id: str) -> PendingOrder | None:
+    order = _pending_orders.pop(order_id, None)
+    if order:
+        logger.info("Removed pending order %s for %s", order_id, order.ticker)
+    return order

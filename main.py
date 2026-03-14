@@ -12,6 +12,9 @@ Two exit modes:
 Settings are adjustable via Discord commands:
   !settings              — view current settings
   !positions             — view open positions (manual mode)
+  !orders                — view pending (unfilled) orders
+  !cancel <id>           — cancel a pending order
+  !cancel all            — cancel all pending orders
   !set risk <pct>        — set risk per trade %
   !set stoploss <pct>    — set stop-loss %
   !set takeprofit <pct>  — set take-profit %
@@ -24,8 +27,12 @@ import discord
 
 from config import Config
 from alert_parser import parse_alert, parse_trim_alert
-from broker import login, place_order, sell_position
-from positions import Position, add_position, get_positions, get_all_positions, remove_all_positions
+from broker import login, place_order, sell_position, get_order_status, cancel_order
+from positions import (
+    Position, PendingOrder,
+    add_position, get_positions, get_all_positions, remove_all_positions,
+    add_pending_order, get_all_pending_orders, remove_pending_order,
+)
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -116,10 +123,37 @@ async def on_message(message: discord.Message):
         alert.expiration, alert.entry_price,
     )
 
+    # --- Confirm we're placing the order ---
+    mode_label = "PAPER" if Config.PAPER_TRADE else "LIVE"
+    exit_label = "auto OTOCO" if Config.EXIT_MODE == "auto" else "manual"
+    confirm_msg = (
+        f"**Placing Order** [{mode_label} | {exit_label}]\n"
+        f"{alert.ticker} ${alert.strike} {alert.option_type} exp {alert.expiration} "
+        f"@ ${alert.entry_price:.2f}..."
+    )
+    await message.channel.send(confirm_msg)
+
     result = place_order(alert)
 
     if result.success:
         logger.info("Order placed: %s", result.message)
+
+        # Track as pending order
+        pending = PendingOrder(
+            order_id=result.order_id or "unknown",
+            ticker=alert.ticker,
+            strike=alert.strike,
+            option_type=alert.option_type,
+            expiration=alert.expiration,
+            contracts=result.contracts,
+            entry_price=alert.entry_price,
+            total_cost=result.total_cost,
+            stop_loss_price=result.stop_loss_price,
+            take_profit_price=result.take_profit_price,
+            option_symbol=result.option_symbol,
+            stop_order_id=result.stop_order_id,
+        )
+        add_pending_order(pending)
 
         # Track position for manual TP mode
         if Config.EXIT_MODE == "manual":
@@ -144,13 +178,26 @@ async def on_message(message: discord.Message):
             else "TP: awaiting trim alert"
         )
         reply = (
-            f"**Order Placed**\n"
+            f"**Order Placed Successfully**\n"
             f"{result.message}\n"
+            f"Order ID: `{result.order_id}`\n"
             f"Contracts: {result.contracts} | "
             f"Total cost: ${result.total_cost:.2f} | "
             f"SL: ${result.stop_loss_price:.2f} | "
             f"{tp_line}"
         )
+
+        # Check fill status (paper orders fill instantly)
+        if Config.PAPER_TRADE:
+            remove_pending_order(pending.order_id)
+            reply += "\nStatus: **Filled** (paper)"
+        else:
+            status = get_order_status(result.order_id)
+            if status and status.lower() in ("filled", "completed"):
+                remove_pending_order(pending.order_id)
+                reply += f"\nStatus: **Filled**"
+            else:
+                reply += f"\nStatus: **Pending** — use `{PREFIX}orders` to check"
     else:
         logger.warning("Order failed: %s", result.message)
         reply = f"**Order Failed**\n{result.message}"
@@ -210,6 +257,12 @@ async def _handle_command(message: discord.Message, command: str):
         await _show_settings(message)
     elif cmd == "positions":
         await _show_positions(message)
+    elif cmd == "orders":
+        await _show_orders(message)
+    elif cmd == "cancel" and len(parts) >= 2:
+        await _cancel_order(message, parts[1])
+    elif cmd == "cancel":
+        await message.channel.send(f"Usage: `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
     elif cmd == "set" and len(parts) >= 3:
         await _set_setting(message, parts[1], parts[2])
     elif cmd == "help":
@@ -319,12 +372,104 @@ async def _set_setting(message: discord.Message, key: str, value: str):
         )
 
 
+async def _show_orders(message: discord.Message):
+    """Show all pending (unfilled) orders."""
+    pending = get_all_pending_orders()
+    if not pending:
+        await message.channel.send("No pending orders.")
+        return
+
+    # Refresh statuses and remove filled ones
+    filled = []
+    lines = ["**Pending Orders**\n```"]
+    for order_id, order in pending.items():
+        status = get_order_status(order_id)
+        if status and status.lower() in ("filled", "completed"):
+            filled.append(order_id)
+            continue
+        if status and status.lower() in ("cancelled", "canceled", "rejected", "expired"):
+            filled.append(order_id)
+            continue
+        status_str = status or "Unknown"
+        lines.append(
+            f"[{order_id}] {order.ticker} {order.contracts}x "
+            f"${order.strike} {order.option_type} exp {order.expiration} "
+            f"@ ${order.entry_price:.2f} — {status_str}"
+        )
+
+    # Clean up filled/cancelled orders
+    for oid in filled:
+        remove_pending_order(oid)
+
+    if len(lines) == 1:
+        await message.channel.send("No pending orders (all previously pending orders have filled or been cancelled).")
+        return
+
+    lines.append("```")
+    lines.append(f"Cancel with `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
+    await message.channel.send("\n".join(lines))
+
+
+async def _cancel_order(message: discord.Message, order_id_or_all: str):
+    """Cancel a pending order by ID, or all pending orders."""
+    pending = get_all_pending_orders()
+
+    if not pending:
+        await message.channel.send("No pending orders to cancel.")
+        return
+
+    if order_id_or_all == "all":
+        cancelled = []
+        failed = []
+        for oid, order in pending.items():
+            if cancel_order(oid):
+                remove_pending_order(oid)
+                cancelled.append(f"{order.ticker} [{oid}]")
+            else:
+                failed.append(f"{order.ticker} [{oid}]")
+
+        lines = []
+        if cancelled:
+            lines.append(f"**Cancelled {len(cancelled)} order(s):**\n" + ", ".join(cancelled))
+        if failed:
+            lines.append(f"**Failed to cancel {len(failed)}:**\n" + ", ".join(failed))
+        await message.channel.send("\n".join(lines) if lines else "No orders to cancel.")
+        return
+
+    # Cancel specific order
+    order = pending.get(order_id_or_all)
+    if not order:
+        await message.channel.send(
+            f"Order `{order_id_or_all}` not found. Use `{PREFIX}orders` to see pending orders."
+        )
+        return
+
+    if cancel_order(order_id_or_all):
+        # Also cancel the associated stop order if any
+        if order.stop_order_id:
+            cancel_order(order.stop_order_id)
+        remove_pending_order(order_id_or_all)
+        await message.channel.send(
+            f"**Order Cancelled**\n"
+            f"{order.ticker} {order.contracts}x ${order.strike} {order.option_type} "
+            f"exp {order.expiration} — Order `{order_id_or_all}`"
+        )
+    else:
+        await message.channel.send(
+            f"**Failed to cancel** order `{order_id_or_all}`. "
+            f"It may have already filled or been cancelled."
+        )
+
+
 async def _show_help(message: discord.Message):
     reply = (
         f"**Trading Bot Commands**\n"
         f"```\n"
         f"{PREFIX}settings              View current settings\n"
         f"{PREFIX}positions             View open positions\n"
+        f"{PREFIX}orders                View pending (unfilled) orders\n"
+        f"{PREFIX}cancel <id>           Cancel a pending order by ID\n"
+        f"{PREFIX}cancel all            Cancel all pending orders\n"
         f"{PREFIX}set risk <pct>        Set risk per trade (default: 1%)\n"
         f"{PREFIX}set stoploss <pct>    Set stop-loss % (default: 25%)\n"
         f"{PREFIX}set takeprofit <pct>  Set take-profit % (default: 30%)\n"
