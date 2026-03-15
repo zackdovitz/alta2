@@ -171,7 +171,7 @@ async def _handle_trim_alert(message: discord.Message, trim):
     messages = []
 
     for pos in positions:
-        contracts_to_sell = pos.contracts if trim.sell_all else max(1, pos.contracts // 2)
+        contracts_to_sell = max(1, round(pos.contracts * trim.sell_fraction))
 
         result = sell_position(
             option_symbol=pos.option_symbol,
