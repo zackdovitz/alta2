@@ -138,23 +138,33 @@ async def on_message(message: discord.Message):
         await _handle_command(message, text[len(PREFIX):].strip())
         return
 
-    # --- Check for trim/profit alerts first ---
+    # --- Route based on channel type ---
     is_profit_channel = message.channel.id in Config.PROFIT_CHANNEL_IDS
     is_alert_channel = message.channel.id in Config.DISCORD_CHANNEL_IDS
 
-    if Config.EXIT_MODE == "manual":
-        trim = await parse_trim_alert(text)
-        if trim:
-            await _handle_trim_alert(message, trim)
-            return
+    # Profit-only channels: only check for trim/exit alerts
+    if is_profit_channel and not is_alert_channel:
+        if Config.EXIT_MODE == "manual":
+            trim = await parse_trim_alert(text)
+            if trim:
+                await _handle_trim_alert(message, trim)
+        return
 
-    # --- Handle entry alerts (only from alert channels) ---
+    # Alert channels: try entry parsing FIRST, then fall back to trim
     if not is_alert_channel:
         return
 
     logger.info("Alert received in #%s: %s", message.channel.name, text)
 
     alert = await parse_alert(text)
+
+    # If entry parsing failed, check if it's a trim alert instead
+    if alert is None and Config.EXIT_MODE == "manual":
+        trim = await parse_trim_alert(text)
+        if trim:
+            await _handle_trim_alert(message, trim)
+            return
+
     if alert is None:
         # Check if it's a partial alert that's missing some fields
         missing = partial_parse(text)
