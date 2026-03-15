@@ -25,6 +25,7 @@ LLM fallback:
    If no API key is set, the parser silently falls back to regex-only.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -123,8 +124,8 @@ If you cannot identify a ticker, set it to null.
 Message: {message}"""
 
 
-def _llm_parse_entry(text: str) -> ParsedAlert | None:
-    """Ask the LLM to parse an entry alert. Returns None on failure."""
+def _llm_parse_entry_sync(text: str) -> ParsedAlert | None:
+    """Synchronous LLM entry parse (runs in a thread to avoid blocking)."""
     client = _llm_client()
     if client is None:
         return None
@@ -173,8 +174,13 @@ def _llm_parse_entry(text: str) -> ParsedAlert | None:
         return None
 
 
-def _llm_parse_trim(text: str) -> TrimAlert | None:
-    """Ask the LLM to parse a trim/exit alert. Returns None on failure."""
+async def _llm_parse_entry(text: str) -> ParsedAlert | None:
+    """Ask the LLM to parse an entry alert. Non-blocking."""
+    return await asyncio.to_thread(_llm_parse_entry_sync, text)
+
+
+def _llm_parse_trim_sync(text: str) -> TrimAlert | None:
+    """Synchronous LLM trim parse (runs in a thread to avoid blocking)."""
     client = _llm_client()
     if client is None:
         return None
@@ -214,6 +220,11 @@ def _llm_parse_trim(text: str) -> TrimAlert | None:
     except Exception as e:
         logger.debug("LLM trim result invalid: %s", e)
         return None
+
+
+async def _llm_parse_trim(text: str) -> TrimAlert | None:
+    """Ask the LLM to parse a trim/exit alert. Non-blocking."""
+    return await asyncio.to_thread(_llm_parse_trim_sync, text)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +357,10 @@ def _extract_expiration(text: str) -> str:
     upper = text.upper()
     today = datetime.now()
 
+    # 0DTE = expiring today
+    if re.search(r"\b0\s*DTE\b", upper):
+        return today.strftime("%Y-%m-%d")
+
     if re.search(r"\bWEEKL(?:Y|IES)\b", upper):
         return _next_friday(today)
 
@@ -426,12 +441,12 @@ def partial_parse(text: str) -> list[str] | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse_alert(text: str) -> ParsedAlert | None:
+async def parse_alert(text: str) -> ParsedAlert | None:
     """Parse a free-form trading alert into structured data.
 
     Strategy:
     1. Try regex.
-    2. If regex fails OR message looks complex, try LLM.
+    2. If regex fails OR message looks complex, try LLM (in a thread).
     3. Prefer LLM result when both succeed on a complex message.
     """
     raw = text
@@ -460,7 +475,7 @@ def parse_alert(text: str) -> ParsedAlert | None:
 
     # --- LLM attempt (complex message or regex failed) ---
     if is_llm_available():
-        llm_result = _llm_parse_entry(text)
+        llm_result = await _llm_parse_entry(text)
         if llm_result:
             logger.debug("LLM parsed entry alert for %s", llm_result.ticker)
             return llm_result
@@ -469,7 +484,7 @@ def parse_alert(text: str) -> ParsedAlert | None:
     return regex_result
 
 
-def parse_trim_alert(text: str) -> TrimAlert | None:
+async def parse_trim_alert(text: str) -> TrimAlert | None:
     """Parse a message as a trim/profit-taking alert.
 
     Returns None if the message doesn't look like a trim signal.
@@ -512,7 +527,7 @@ def parse_trim_alert(text: str) -> TrimAlert | None:
 
             # Use LLM for complex/ambiguous messages
             if _looks_complex(text) and is_llm_available():
-                llm_result = _llm_parse_trim(text)
+                llm_result = await _llm_parse_trim(text)
                 if llm_result:
                     logger.debug(
                         "LLM parsed trim alert: %s sell_fraction=%.2f",
@@ -524,7 +539,7 @@ def parse_trim_alert(text: str) -> TrimAlert | None:
 
     # Regex didn't match — try LLM anyway (catches creative exit language)
     if is_llm_available():
-        llm_result = _llm_parse_trim(text)
+        llm_result = await _llm_parse_trim(text)
         if llm_result:
             logger.debug(
                 "LLM-only trim parse: %s sell_fraction=%.2f",

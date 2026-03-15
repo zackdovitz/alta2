@@ -143,7 +143,7 @@ async def on_message(message: discord.Message):
     is_alert_channel = message.channel.id in Config.DISCORD_CHANNEL_IDS
 
     if Config.EXIT_MODE == "manual":
-        trim = parse_trim_alert(text)
+        trim = await parse_trim_alert(text)
         if trim:
             await _handle_trim_alert(message, trim)
             return
@@ -154,7 +154,7 @@ async def on_message(message: discord.Message):
 
     logger.info("Alert received in #%s: %s", message.channel.name, text)
 
-    alert = parse_alert(text)
+    alert = await parse_alert(text)
     if alert is None:
         # Check if it's a partial alert that's missing some fields
         missing = partial_parse(text)
@@ -429,7 +429,7 @@ async def _set_setting(message: discord.Message, key: str, value: str):
 
 async def _manual_buy(message: discord.Message, command: str):
     """Manually place an order: !buy TICKER STRIKE call/put EXPIRATION @ PRICE"""
-    alert = parse_alert(command)
+    alert = await parse_alert(command)
     if alert is None:
         await message.channel.send(
             f"Could not parse. Usage:\n"
