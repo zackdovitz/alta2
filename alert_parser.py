@@ -393,6 +393,36 @@ def _next_friday(from_date: datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Partial parse (for user feedback on incomplete alerts)
+# ---------------------------------------------------------------------------
+
+def partial_parse(text: str) -> list[str] | None:
+    """Check if text looks like a trading alert but is missing fields.
+
+    Returns a list of missing field names if it looks like a partial alert,
+    or None if it doesn't look like a trading alert at all.
+    """
+    cleaned = text.upper()
+    ticker = _extract_ticker(cleaned)
+    if not ticker:
+        return None
+
+    missing = []
+    strike = _extract_strike(cleaned, ticker)
+    if strike is None:
+        missing.append("strike price")
+
+    entry_price = _extract_entry_price(cleaned)
+    if entry_price is None:
+        missing.append("entry price")
+
+    if not missing:
+        return None  # Has all required fields
+
+    return missing
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
