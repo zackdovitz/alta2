@@ -89,10 +89,14 @@ Extract the following fields from the message and return ONLY valid JSON (no mar
   "strike": <strike price as a number, e.g. 150.0>,
   "option_type": "<call or put>",
   "expiration": "<YYYY-MM-DD; use next Friday if weekly/unspecified>",
-  "entry_price": <price per contract as a number, e.g. 2.50>
+  "entry_price": <price per contract as a number, e.g. 2.50; handle decimals like .50 as 0.50>
 }}
 
-If you cannot determine a field with confidence, set it to null.
+Rules:
+- option_type: if not explicitly stated, default to "call" for buy/BTO alerts (most alerts are calls unless "put" or "P" is mentioned)
+- expiration: "weeklies" or "weekly" means next Friday; if not specified default to next Friday
+- entry_price: handle prices without leading zero (e.g. "@.50" = 0.50, "@.75" = 0.75)
+- Only set a field to null if you truly cannot determine it at all.
 Today's date is {today}.
 
 Message: {message}"""
@@ -322,13 +326,18 @@ def _extract_strike(text: str, ticker: str) -> float | None:
 
 
 def _extract_entry_price(text: str) -> float | None:
-    match = re.search(r"(?:FOR|@|AT)\s*\$?(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    # Match "@ .50", "@ 2.50", "for $1.20", "at 3.40" — allow leading-zero-less decimals
+    match = re.search(r"(?:FOR|@|AT)\s*\$?(\d*\.?\d+)", text, re.IGNORECASE)
     if match:
-        return float(match.group(1))
+        val = float(match.group(1))
+        if val > 0:
+            return val
 
-    match = re.search(r"\$?(\d+\.\d+)\s*(?:DEBIT|PREMIUM|CREDIT)", text)
+    match = re.search(r"\$?(\d*\.?\d+)\s*(?:DEBIT|PREMIUM|CREDIT)", text)
     if match:
-        return float(match.group(1))
+        val = float(match.group(1))
+        if val > 0:
+            return val
 
     return None
 
