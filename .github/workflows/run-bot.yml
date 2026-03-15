@@ -37,6 +37,9 @@ jobs:
           TAKE_PROFIT_PCT=${{ vars.TAKE_PROFIT_PCT || '30.0' }}
           EXIT_MODE=${{ vars.EXIT_MODE || 'manual' }}
           PAPER_TRADE=${{ vars.PAPER_TRADE || 'true' }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL=${{ secrets.OPENAI_BASE_URL }}
+          PARSER_MODEL=${{ vars.PARSER_MODEL || 'claude-sonnet-4-6' }}
           EOF
 
       - name: Run bot
