@@ -84,13 +84,13 @@ def _llm_client():
 _LLM_ENTRY_PROMPT = """You are a parser for options trading alert messages posted in Discord.
 Extract the following fields from the message and return ONLY valid JSON (no markdown, no explanation):
 
-{
+{{
   "ticker": "<1-5 letter stock symbol, uppercase>",
   "strike": <strike price as a number, e.g. 150.0>,
   "option_type": "<call or put>",
   "expiration": "<YYYY-MM-DD; use next Friday if weekly/unspecified>",
   "entry_price": <price per contract as a number, e.g. 2.50>
-}
+}}
 
 If you cannot determine a field with confidence, set it to null.
 Today's date is {today}.
@@ -100,11 +100,11 @@ Message: {message}"""
 _LLM_TRIM_PROMPT = """You are a parser for options trading exit/trim alert messages posted in Discord.
 Extract the following fields and return ONLY valid JSON (no markdown, no explanation):
 
-{
+{{
   "ticker": "<1-5 letter stock symbol, uppercase>",
   "sell_fraction": <fraction of position to sell, 0.0 to 1.0>,
   "reasoning": "<one sentence>"
-}
+}}
 
 Rules for sell_fraction:
 - "close", "STC", "sell all", "exit all", "full exit" → 1.0
@@ -501,6 +501,8 @@ def parse_trim_alert(text: str) -> TrimAlert | None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
     logging.basicConfig(level=logging.DEBUG)
 
     entry_samples = [
