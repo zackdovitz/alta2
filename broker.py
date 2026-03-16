@@ -179,10 +179,15 @@ async def place_order(alert: ParsedAlert) -> OrderResult:
 
     logger.info("Account value: $%.2f", account_value)
 
+    is_lotto = "lotto" in alert.raw_text.lower()
+    effective_risk_pct = Config.RISK_PER_TRADE_PCT * (0.5 if is_lotto else 1.0)
+    if is_lotto:
+        logger.info("Lotto alert detected — using half risk (%.1f%%)", effective_risk_pct)
+
     num_contracts, stop_loss_price, take_profit_price = calculate_position(
         account_value=account_value,
         entry_price=alert.entry_price,
-        risk_pct=Config.RISK_PER_TRADE_PCT,
+        risk_pct=effective_risk_pct,
         stop_loss_pct=Config.STOP_LOSS_PCT,
         take_profit_pct=Config.TAKE_PROFIT_PCT,
     )
