@@ -153,8 +153,12 @@ def calculate_position(
     # Always buy at least 1 contract if affordable
     num_contracts = max(num_contracts, 1)
 
-    stop_loss_price = round(entry_price * (1 - stop_loss_pct / 100.0), 2)
-    take_profit_price = round(entry_price * (1 + take_profit_pct / 100.0), 2)
+    def round_to_nickel(price: float) -> float:
+        """Round price to nearest $0.05 as required by options exchanges."""
+        return round(round(price / 0.05) * 0.05, 2)
+
+    stop_loss_price = round_to_nickel(entry_price * (1 - stop_loss_pct / 100.0))
+    take_profit_price = round_to_nickel(entry_price * (1 + take_profit_pct / 100.0))
 
     return num_contracts, stop_loss_price, take_profit_price
 
@@ -280,7 +284,7 @@ async def _place_otoco(
             time_in_force=OrderTimeInForce.DAY,
             order_type=OrderType.LIMIT,
             legs=[opening_leg],
-            price=Decimal(str(-alert.entry_price)),
+            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
         ),
         orders=[
             NewOrder(
@@ -325,7 +329,7 @@ async def _place_entry_with_stop(
             time_in_force=OrderTimeInForce.DAY,
             order_type=OrderType.LIMIT,
             legs=[opening_leg],
-            price=Decimal(str(-alert.entry_price)),
+            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
         ),
         orders=[
             NewOrder(
