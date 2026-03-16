@@ -108,7 +108,16 @@ def _extract_text(message: discord.Message) -> str:
                 logger.info("Extracted text from embed description: %s", embed.description.strip())
                 return embed.description.strip()
             if embed.title:
+                logger.info("Extracted text from embed title: %s", embed.title.strip())
                 return embed.title.strip()
+            # Some alert bots put data in embed fields
+            if embed.fields:
+                parts = []
+                for f in embed.fields:
+                    parts.append(f"{f.name}: {f.value}" if f.name else f.value)
+                combined = " | ".join(parts)
+                logger.info("Extracted text from embed fields: %s", combined)
+                return combined
 
     # Log what we received for debugging
     logger.info(
@@ -128,6 +137,16 @@ async def on_message(message: discord.Message):
 
     if message.channel.id not in _all_monitored_channels():
         return
+
+    # Debug: log every message from monitored channels
+    logger.debug(
+        "Message in #%s from %s: content=%r, embeds=%d, snapshots=%d",
+        getattr(message.channel, "name", message.channel.id),
+        message.author,
+        message.content[:100] if message.content else "(empty)",
+        len(message.embeds),
+        len(getattr(message, "message_snapshots", []) or []),
+    )
 
     text = _extract_text(message)
     if not text:

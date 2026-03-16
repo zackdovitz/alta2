@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # Module-level state
 _session: Session | None = None
 _account: Account | None = None
+_session_ctx = None  # holds the async context manager so it stays alive
 
 
 @dataclass
@@ -62,11 +63,25 @@ class SellResult:
 
 async def login() -> bool:
     """Authenticate with Tastytrade via OAuth. Returns True on success."""
-    global _session, _account
+    global _session, _account, _session_ctx
     try:
-        _session = Session(Config.TT_CLIENT_SECRET, Config.TT_REFRESH_TOKEN)
-        _account = await Account.get(_session, Config.TT_ACCOUNT_NUMBER)
-        logger.info("Tastytrade login successful for account %s", Config.TT_ACCOUNT_NUMBER)
+        session = Session(Config.TT_CLIENT_SECRET, Config.TT_REFRESH_TOKEN)
+        # Session must be entered as an async context manager to initialize
+        # the httpx AsyncClient — without this, all API calls fail.
+        _session_ctx = session.__asynccontextmanager__()
+        _session = await _session_ctx.__aenter__()
+        accounts = await Account.get(_session)
+        if isinstance(accounts, list):
+            _account = next(
+                (a for a in accounts if a.account_number == Config.TT_ACCOUNT_NUMBER),
+                accounts[0] if accounts else None,
+            )
+        else:
+            _account = accounts
+        if not _account:
+            logger.error("No Tastytrade account found for %s", Config.TT_ACCOUNT_NUMBER)
+            return False
+        logger.info("Tastytrade login successful for account %s", _account.account_number)
         return True
     except Exception as e:
         logger.error("Tastytrade login error: %s", e)
