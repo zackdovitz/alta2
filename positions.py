@@ -47,6 +47,7 @@ class PendingOrder:
     option_symbol: str | None
     stop_order_id: str | None
     placed_at: datetime = field(default_factory=datetime.now)
+    suppress_alerts: bool = False  # set True after user says !keep
 
 
 # Ticker -> list of positions (could have multiple entries on the same ticker)

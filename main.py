@@ -23,11 +23,12 @@ Settings are adjustable via Discord commands:
 """
 
 import logging
+import asyncio
 import discord
 
 from config import Config
 from alert_parser import parse_alert, parse_trim_alert, partial_parse
-from broker import login, place_order, sell_position, get_order_status, cancel_order
+from broker import login, place_order, sell_position, get_order_status, cancel_order, bump_order_price
 from positions import (
     Position, PendingOrder,
     add_position, get_positions, get_all_positions, remove_all_positions,
@@ -77,6 +78,68 @@ async def on_ready():
             logger.error("Tastytrade login failed — bot will run but cannot place orders")
     else:
         logger.info("Skipping Tastytrade login in paper-trade mode")
+
+    # Start background order monitor
+    client.loop.create_task(_monitor_pending_orders())
+
+
+# How long to wait before alerting on an unfilled order (seconds)
+UNFILLED_ALERT_AFTER = 60
+# Price bump percentage when user requests a higher bid
+BUMP_PCT = 5.0
+
+
+async def _monitor_pending_orders():
+    """Background task: poll pending orders and notify user if unfilled."""
+    await client.wait_until_ready()
+    # Use first alert channel as the notification channel
+    notify_channel_id = Config.DISCORD_CHANNEL_IDS[0] if Config.DISCORD_CHANNEL_IDS else None
+
+    while not client.is_closed():
+        await asyncio.sleep(UNFILLED_ALERT_AFTER)
+
+        if Config.PAPER_TRADE or not notify_channel_id:
+            continue
+
+        channel = client.get_channel(notify_channel_id)
+        if not channel:
+            continue
+
+        pending = get_all_pending_orders()
+        for order_id, order in list(pending.items()):
+            if order_id == "unknown":
+                continue
+            if order.suppress_alerts:
+                continue
+            try:
+                status = await get_order_status(order_id)
+            except Exception:
+                continue
+
+            if not status:
+                continue
+
+            status_lower = status.lower()
+            if status_lower in ("filled", "completed", "cancelled", "canceled"):
+                remove_pending_order(order_id)
+                if status_lower in ("filled", "completed"):
+                    logger.info("Order %s filled", order_id)
+                continue
+
+            # Still open/working — alert the user
+            bumped_price = round(round((order.entry_price * (1 + BUMP_PCT / 100)) / 0.05) * 0.05, 2)
+            msg = (
+                f"⚠️ **Unfilled Order** — `{order_id}`\n"
+                f"{order.contracts}x {order.ticker} ${order.strike} {order.option_type} "
+                f"exp {order.expiration} @ ${order.entry_price:.2f}\n"
+                f"Status: **{status}**\n\n"
+                f"What do you want to do?\n"
+                f"• `!bump {order_id}` — increase price by {BUMP_PCT:.0f}% (→ ${bumped_price:.2f})\n"
+                f"• `!keep {order_id}` — leave it open, stop alerting\n"
+                f"• `!cancel {order_id}` — cancel the order"
+            )
+            await channel.send(msg)
+            logger.info("Alerted on unfilled order %s (status: %s)", order_id, status)
 
 
 def _extract_text(message: discord.Message) -> str:
@@ -347,6 +410,16 @@ async def _handle_command(message: discord.Message, command: str):
         await _cancel_order(message, parts[1])
     elif cmd == "cancel":
         await message.channel.send(f"Usage: `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
+    elif cmd == "bump" and len(parts) >= 2:
+        await _bump_order(message, parts[1])
+    elif cmd == "keep" and len(parts) >= 2:
+        order_id = parts[1]
+        pending = get_all_pending_orders()
+        if order_id in pending:
+            pending[order_id].suppress_alerts = True
+            await message.channel.send(f"✅ Got it — keeping order `{order_id}` open, won't alert again.")
+        else:
+            await message.channel.send(f"Order `{order_id}` not found in pending orders.")
     elif cmd == "set" and len(parts) >= 3:
         await _set_setting(message, parts[1], parts[2])
     elif cmd == "help":
@@ -583,6 +656,37 @@ async def _show_orders(message: discord.Message):
     lines.append("```")
     lines.append(f"Cancel with `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
     await message.channel.send("\n".join(lines))
+
+
+async def _bump_order(message: discord.Message, order_id: str):
+    """Cancel existing order and resubmit at a higher price (+BUMP_PCT%)."""
+    pending = get_all_pending_orders()
+    order = pending.get(order_id)
+    if not order:
+        await message.channel.send(f"Order `{order_id}` not found. Use `{PREFIX}orders` to see pending orders.")
+        return
+
+    new_price = round(round((order.entry_price * (1 + BUMP_PCT / 100)) / 0.05) * 0.05, 2)
+    await message.channel.send(f"⏳ Bumping order `{order_id}` — cancelling and resubmitting @ ${new_price:.2f}...")
+
+    result = await bump_order_price(order, new_price)
+    if result.success:
+        remove_pending_order(order_id)
+        add_pending_order(PendingOrder(
+            order_id=result.order_id or order_id,
+            ticker=order.ticker,
+            strike=order.strike,
+            option_type=order.option_type,
+            expiration=order.expiration,
+            contracts=order.contracts,
+            entry_price=new_price,
+            stop_loss_price=order.stop_loss_price,
+            stop_order_id=result.stop_order_id,
+            option_symbol=order.option_symbol,
+        ))
+        await message.channel.send(f"✅ **Order Bumped** — new order `{result.order_id}` @ ${new_price:.2f}")
+    else:
+        await message.channel.send(f"❌ **Bump failed:** {result.message}")
 
 
 async def _cancel_order(message: discord.Message, order_id_or_all: str):

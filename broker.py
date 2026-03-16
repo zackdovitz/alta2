@@ -394,6 +394,74 @@ async def cancel_order(order_id: str) -> bool:
         return False
 
 
+async def bump_order_price(order, new_price: float) -> "OrderResult":
+    """Cancel an unfilled order and resubmit at a higher price."""
+    from positions import PendingOrder  # avoid circular import
+
+    # Cancel the existing order
+    cancelled = await cancel_order(order.order_id)
+    if not cancelled:
+        return OrderResult(
+            success=False, order_id=None, stop_order_id=None,
+            option_symbol=order.option_symbol, contracts=order.contracts,
+            total_cost=order.total_cost, stop_loss_price=order.stop_loss_price,
+            take_profit_price=order.take_profit_price,
+            message=f"Failed to cancel order {order.order_id} before bumping",
+        )
+
+    # Rebuild a minimal alert-like object with the new price
+    from alert_parser import ParsedAlert
+    bumped_alert = ParsedAlert(
+        ticker=order.ticker,
+        strike=order.strike,
+        option_type=order.option_type,
+        expiration=order.expiration,
+        entry_price=new_price,
+        raw_text=f"bumped from {order.entry_price}",
+    )
+
+    # Re-use existing stop_loss_price, don't recalculate risk
+    if not _session or not _account:
+        return OrderResult(
+            success=False, order_id=None, stop_order_id=None,
+            option_symbol=None, contracts=order.contracts,
+            total_cost=0, stop_loss_price=order.stop_loss_price,
+            take_profit_price=order.take_profit_price,
+            message="Not logged in to Tastytrade",
+        )
+
+    try:
+        option = await _find_option(bumped_alert)
+        if option is None:
+            return OrderResult(
+                success=False, order_id=None, stop_order_id=None,
+                option_symbol=None, contracts=order.contracts,
+                total_cost=0, stop_loss_price=order.stop_loss_price,
+                take_profit_price=order.take_profit_price,
+                message=f"Could not find option contract for {order.ticker}",
+            )
+
+        opening_leg = option.build_leg(Decimal(order.contracts), OrderAction.BUY_TO_OPEN)
+        closing_leg = option.build_leg(Decimal(order.contracts), OrderAction.SELL_TO_CLOSE)
+
+        return await _place_entry_with_stop(
+            bumped_alert, option, opening_leg, closing_leg, option.symbol,
+            order.contracts,
+            order.contracts * new_price * 100,
+            order.stop_loss_price,
+            order.take_profit_price,
+        )
+    except Exception as e:
+        logger.error("Bump order failed: %s", e)
+        return OrderResult(
+            success=False, order_id=None, stop_order_id=None,
+            option_symbol=None, contracts=order.contracts,
+            total_cost=0, stop_loss_price=order.stop_loss_price,
+            take_profit_price=order.take_profit_price,
+            message=f"Bump order failed: {e}",
+        )
+
+
 async def sell_position(
     option_symbol: str,
     contracts: int,
