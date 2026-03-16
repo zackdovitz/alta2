@@ -25,6 +25,7 @@ LLM fallback:
    If no API key is set, the parser silently falls back to regex-only.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ class ParsedAlert:
     expiration: str   # ISO date string YYYY-MM-DD
     entry_price: float
     raw_text: str
+    use_market_order: bool = False  # True when no price given in alert
 
 
 @dataclass
@@ -89,13 +91,13 @@ Extract the following fields from the message and return ONLY valid JSON (no mar
   "strike": <strike price as a number, e.g. 150.0>,
   "option_type": "<call or put>",
   "expiration": "<YYYY-MM-DD; use next Friday if weekly/unspecified>",
-  "entry_price": <price per contract as a number, e.g. 2.50; handle decimals like .50 as 0.50>
+  "entry_price": <price per contract as a number, e.g. 2.50; handle decimals like .50 as 0.50; use -1 if no price is mentioned>
 }}
 
 Rules:
 - option_type: if not explicitly stated, default to "call" for buy/BTO alerts (most alerts are calls unless "put" or "P" is mentioned)
-- expiration: "weeklies" or "weekly" means next Friday; if not specified default to next Friday
-- entry_price: handle prices without leading zero (e.g. "@.50" = 0.50, "@.75" = 0.75)
+- expiration: "weeklies" or "weekly" means next Friday; "0dte" or "0 dte" means today ({today}); if not specified default to next Friday
+- entry_price: handle prices without leading zero (e.g. "@.50" = 0.50, "@.75" = 0.75); if no price is given at all, return -1
 - Only set a field to null if you truly cannot determine it at all.
 Today's date is {today}.
 
@@ -123,8 +125,8 @@ If you cannot identify a ticker, set it to null.
 Message: {message}"""
 
 
-def _llm_parse_entry(text: str) -> ParsedAlert | None:
-    """Ask the LLM to parse an entry alert. Returns None on failure."""
+def _llm_parse_entry_sync(text: str) -> ParsedAlert | None:
+    """Synchronous LLM entry parse (runs in a thread to avoid blocking)."""
     client = _llm_client()
     if client is None:
         return None
@@ -156,8 +158,16 @@ def _llm_parse_entry(text: str) -> ParsedAlert | None:
         expiration = data.get("expiration")
         entry_price = data.get("entry_price")
 
-        if not all([ticker, strike is not None, option_type in ("call", "put"),
-                    expiration, entry_price is not None]):
+        entry_price_raw = data.get("entry_price")
+        # -1 means no price given — flag for market order
+        if entry_price_raw is None:
+            return None
+        entry_price = float(entry_price_raw)
+        use_market = (entry_price < 0)
+        if use_market:
+            entry_price = 0.0  # will be filled at market
+
+        if not all([ticker, strike is not None, option_type in ("call", "put"), expiration]):
             return None
 
         return ParsedAlert(
@@ -165,7 +175,8 @@ def _llm_parse_entry(text: str) -> ParsedAlert | None:
             strike=float(strike),
             option_type=option_type,
             expiration=str(expiration),
-            entry_price=float(entry_price),
+            entry_price=entry_price,
+            use_market_order=use_market,
             raw_text=text,
         )
     except Exception as e:
@@ -173,8 +184,13 @@ def _llm_parse_entry(text: str) -> ParsedAlert | None:
         return None
 
 
-def _llm_parse_trim(text: str) -> TrimAlert | None:
-    """Ask the LLM to parse a trim/exit alert. Returns None on failure."""
+async def _llm_parse_entry(text: str) -> ParsedAlert | None:
+    """Ask the LLM to parse an entry alert. Non-blocking."""
+    return await asyncio.to_thread(_llm_parse_entry_sync, text)
+
+
+def _llm_parse_trim_sync(text: str) -> TrimAlert | None:
+    """Synchronous LLM trim parse (runs in a thread to avoid blocking)."""
     client = _llm_client()
     if client is None:
         return None
@@ -214,6 +230,11 @@ def _llm_parse_trim(text: str) -> TrimAlert | None:
     except Exception as e:
         logger.debug("LLM trim result invalid: %s", e)
         return None
+
+
+async def _llm_parse_trim(text: str) -> TrimAlert | None:
+    """Ask the LLM to parse a trim/exit alert. Non-blocking."""
+    return await asyncio.to_thread(_llm_parse_trim_sync, text)
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +367,10 @@ def _extract_expiration(text: str) -> str:
     upper = text.upper()
     today = datetime.now()
 
+    # 0DTE = expiring today
+    if re.search(r"\b0\s*DTE\b", upper):
+        return today.strftime("%Y-%m-%d")
+
     if re.search(r"\bWEEKL(?:Y|IES)\b", upper):
         return _next_friday(today)
 
@@ -393,15 +418,45 @@ def _next_friday(from_date: datetime) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Partial parse (for user feedback on incomplete alerts)
+# ---------------------------------------------------------------------------
+
+def partial_parse(text: str) -> list[str] | None:
+    """Check if text looks like a trading alert but is missing fields.
+
+    Returns a list of missing field names if it looks like a partial alert,
+    or None if it doesn't look like a trading alert at all.
+    """
+    cleaned = text.upper()
+    ticker = _extract_ticker(cleaned)
+    if not ticker:
+        return None
+
+    missing = []
+    strike = _extract_strike(cleaned, ticker)
+    if strike is None:
+        missing.append("strike price")
+
+    entry_price = _extract_entry_price(cleaned)
+    if entry_price is None:
+        missing.append("entry price")
+
+    if not missing:
+        return None  # Has all required fields
+
+    return missing
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def parse_alert(text: str) -> ParsedAlert | None:
+async def parse_alert(text: str) -> ParsedAlert | None:
     """Parse a free-form trading alert into structured data.
 
     Strategy:
     1. Try regex.
-    2. If regex fails OR message looks complex, try LLM.
+    2. If regex fails OR message looks complex, try LLM (in a thread).
     3. Prefer LLM result when both succeed on a complex message.
     """
     raw = text
@@ -430,7 +485,7 @@ def parse_alert(text: str) -> ParsedAlert | None:
 
     # --- LLM attempt (complex message or regex failed) ---
     if is_llm_available():
-        llm_result = _llm_parse_entry(text)
+        llm_result = await _llm_parse_entry(text)
         if llm_result:
             logger.debug("LLM parsed entry alert for %s", llm_result.ticker)
             return llm_result
@@ -439,7 +494,7 @@ def parse_alert(text: str) -> ParsedAlert | None:
     return regex_result
 
 
-def parse_trim_alert(text: str) -> TrimAlert | None:
+async def parse_trim_alert(text: str) -> TrimAlert | None:
     """Parse a message as a trim/profit-taking alert.
 
     Returns None if the message doesn't look like a trim signal.
@@ -482,7 +537,7 @@ def parse_trim_alert(text: str) -> TrimAlert | None:
 
             # Use LLM for complex/ambiguous messages
             if _looks_complex(text) and is_llm_available():
-                llm_result = _llm_parse_trim(text)
+                llm_result = await _llm_parse_trim(text)
                 if llm_result:
                     logger.debug(
                         "LLM parsed trim alert: %s sell_fraction=%.2f",
@@ -494,7 +549,7 @@ def parse_trim_alert(text: str) -> TrimAlert | None:
 
     # Regex didn't match — try LLM anyway (catches creative exit language)
     if is_llm_available():
-        llm_result = _llm_parse_trim(text)
+        llm_result = await _llm_parse_trim(text)
         if llm_result:
             logger.debug(
                 "LLM-only trim parse: %s sell_fraction=%.2f",

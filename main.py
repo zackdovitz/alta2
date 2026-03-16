@@ -12,6 +12,9 @@ Two exit modes:
 Settings are adjustable via Discord commands:
   !settings              — view current settings
   !positions             — view open positions (manual mode)
+  !orders                — view pending (unfilled) orders
+  !cancel <id>           — cancel a pending order
+  !cancel all            — cancel all pending orders
   !set risk <pct>        — set risk per trade %
   !set stoploss <pct>    — set stop-loss %
   !set takeprofit <pct>  — set take-profit %
@@ -20,12 +23,17 @@ Settings are adjustable via Discord commands:
 """
 
 import logging
+import asyncio
 import discord
 
 from config import Config
-from alert_parser import parse_alert, parse_trim_alert
-from broker import login, place_order, sell_position
-from positions import Position, add_position, get_positions, get_all_positions, remove_all_positions
+from alert_parser import parse_alert, parse_trim_alert, partial_parse
+from broker import login, place_order, sell_position, get_order_status, cancel_order, bump_order_price
+from positions import (
+    Position, PendingOrder,
+    add_position, get_positions, get_all_positions, remove_all_positions,
+    add_pending_order, get_all_pending_orders, remove_pending_order,
+)
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -66,10 +74,123 @@ async def on_ready():
         logger.info("*** PAPER TRADING MODE — no real orders will be placed ***")
 
     if not Config.PAPER_TRADE:
-        if not login():
+        if not await login():
             logger.error("Tastytrade login failed — bot will run but cannot place orders")
     else:
         logger.info("Skipping Tastytrade login in paper-trade mode")
+
+    # Start background order monitor
+    client.loop.create_task(_monitor_pending_orders())
+
+
+# How long to wait before alerting on an unfilled order (seconds)
+UNFILLED_ALERT_AFTER = 60
+# Price bump percentage when user requests a higher bid
+BUMP_PCT = 5.0
+
+
+async def _monitor_pending_orders():
+    """Background task: poll pending orders and notify user if unfilled."""
+    await client.wait_until_ready()
+    # Use first alert channel as the notification channel
+    notify_channel_id = Config.DISCORD_CHANNEL_IDS[0] if Config.DISCORD_CHANNEL_IDS else None
+
+    while not client.is_closed():
+        await asyncio.sleep(UNFILLED_ALERT_AFTER)
+
+        if Config.PAPER_TRADE or not notify_channel_id:
+            continue
+
+        channel = client.get_channel(notify_channel_id)
+        if not channel:
+            continue
+
+        pending = get_all_pending_orders()
+        for order_id, order in list(pending.items()):
+            if order_id == "unknown":
+                continue
+            if order.suppress_alerts:
+                continue
+            try:
+                status = await get_order_status(order_id)
+            except Exception:
+                continue
+
+            if not status:
+                continue
+
+            status_lower = status.lower()
+            if status_lower in ("filled", "completed", "cancelled", "canceled"):
+                remove_pending_order(order_id)
+                if status_lower in ("filled", "completed"):
+                    logger.info("Order %s filled", order_id)
+                continue
+
+            # Still open/working — alert the user
+            bumped_price = round(round((order.entry_price * (1 + BUMP_PCT / 100)) / 0.05) * 0.05, 2)
+            msg = (
+                f"⚠️ **Unfilled Order** — `{order_id}`\n"
+                f"{order.contracts}x {order.ticker} ${order.strike} {order.option_type} "
+                f"exp {order.expiration} @ ${order.entry_price:.2f}\n"
+                f"Status: **{status}**\n\n"
+                f"What do you want to do?\n"
+                f"• `!bump {order_id}` — increase price by {BUMP_PCT:.0f}% (→ ${bumped_price:.2f})\n"
+                f"• `!keep {order_id}` — leave it open, stop alerting\n"
+                f"• `!cancel {order_id}` — cancel the order"
+            )
+            await channel.send(msg)
+            logger.info("Alerted on unfilled order %s (status: %s)", order_id, status)
+
+
+def _extract_text(message: discord.Message) -> str:
+    """Extract alert text from a message, including forwarded messages.
+
+    Discord forwarded messages store the original content in message_snapshots
+    rather than message.content.
+    """
+    # Regular message — use content directly
+    text = message.content.strip()
+    if text:
+        return text
+
+    # Forwarded messages — check message_snapshots (Discord 2024+ forwarding)
+    snapshots = getattr(message, "message_snapshots", None)
+    if snapshots:
+        logger.info("Found %d message snapshot(s) in forwarded message", len(snapshots))
+        for snapshot in snapshots:
+            snap_content = getattr(snapshot, "content", "")
+            if snap_content and snap_content.strip():
+                logger.info("Extracted text from forwarded message: %s", snap_content.strip())
+                return snap_content.strip()
+
+    # Fallback — check embeds (some bots/forwards use embeds)
+    if message.embeds:
+        logger.info("Found %d embed(s), checking for alert text", len(message.embeds))
+        for embed in message.embeds:
+            if embed.description:
+                logger.info("Extracted text from embed description: %s", embed.description.strip())
+                return embed.description.strip()
+            if embed.title:
+                logger.info("Extracted text from embed title: %s", embed.title.strip())
+                return embed.title.strip()
+            # Some alert bots put data in embed fields
+            if embed.fields:
+                parts = []
+                for f in embed.fields:
+                    parts.append(f"{f.name}: {f.value}" if f.name else f.value)
+                combined = " | ".join(parts)
+                logger.info("Extracted text from embed fields: %s", combined)
+                return combined
+
+    # Log what we received for debugging
+    logger.info(
+        "Could not extract text from message. content=%r, snapshots=%s, embeds=%d, flags=%s",
+        message.content,
+        len(snapshots) if snapshots else 0,
+        len(message.embeds),
+        message.flags,
+    )
+    return ""
 
 
 @client.event
@@ -80,7 +201,17 @@ async def on_message(message: discord.Message):
     if message.channel.id not in _all_monitored_channels():
         return
 
-    text = message.content.strip()
+    # Debug: log every message from monitored channels
+    logger.debug(
+        "Message in #%s from %s: content=%r, embeds=%d, snapshots=%d",
+        getattr(message.channel, "name", message.channel.id),
+        message.author,
+        message.content[:100] if message.content else "(empty)",
+        len(message.embeds),
+        len(getattr(message, "message_snapshots", []) or []),
+    )
+
+    text = _extract_text(message)
     if not text:
         return
 
@@ -89,25 +220,46 @@ async def on_message(message: discord.Message):
         await _handle_command(message, text[len(PREFIX):].strip())
         return
 
-    # --- Check for trim/profit alerts first ---
+    # --- Route based on channel type ---
     is_profit_channel = message.channel.id in Config.PROFIT_CHANNEL_IDS
     is_alert_channel = message.channel.id in Config.DISCORD_CHANNEL_IDS
 
-    if Config.EXIT_MODE == "manual":
-        trim = parse_trim_alert(text)
-        if trim:
-            await _handle_trim_alert(message, trim)
-            return
+    # Profit-only channels: only check for trim/exit alerts
+    if is_profit_channel and not is_alert_channel:
+        if Config.EXIT_MODE == "manual":
+            trim = await parse_trim_alert(text)
+            if trim:
+                await _handle_trim_alert(message, trim)
+        return
 
-    # --- Handle entry alerts (only from alert channels) ---
+    # Alert channels: try entry parsing FIRST, then fall back to trim
     if not is_alert_channel:
         return
 
     logger.info("Alert received in #%s: %s", message.channel.name, text)
 
-    alert = parse_alert(text)
+    alert = await parse_alert(text)
+
+    # If entry parsing failed, check if it's a trim alert instead
+    if alert is None and Config.EXIT_MODE == "manual":
+        trim = await parse_trim_alert(text)
+        if trim:
+            await _handle_trim_alert(message, trim)
+            return
+
     if alert is None:
-        logger.info("Message did not parse as a trading alert, skipping")
+        # Check if it's a partial alert that's missing some fields
+        missing = partial_parse(text)
+        if missing:
+            logger.info("Partial alert detected, missing: %s", missing)
+            missing_list = ", ".join(missing)
+            await message.channel.send(
+                f"**Could not parse alert** — missing: {missing_list}\n"
+                f"```{text}```\n"
+                f"Please re-send as: `!buy TICKER STRIKE call/put EXPIRATION @ PRICE`"
+            )
+        else:
+            logger.info("Message did not parse as a trading alert, skipping")
         return
 
     logger.info(
@@ -116,10 +268,37 @@ async def on_message(message: discord.Message):
         alert.expiration, alert.entry_price,
     )
 
-    result = place_order(alert)
+    # --- Confirm we're placing the order ---
+    mode_label = "PAPER" if Config.PAPER_TRADE else "LIVE"
+    exit_label = "auto OTOCO" if Config.EXIT_MODE == "auto" else "manual"
+    confirm_msg = (
+        f"**Placing Order** [{mode_label} | {exit_label}]\n"
+        f"{alert.ticker} ${alert.strike} {alert.option_type} exp {alert.expiration} "
+        f"@ ${alert.entry_price:.2f}..."
+    )
+    await message.channel.send(confirm_msg)
+
+    result = await place_order(alert)
 
     if result.success:
         logger.info("Order placed: %s", result.message)
+
+        # Track as pending order
+        pending = PendingOrder(
+            order_id=result.order_id or "unknown",
+            ticker=alert.ticker,
+            strike=alert.strike,
+            option_type=alert.option_type,
+            expiration=alert.expiration,
+            contracts=result.contracts,
+            entry_price=alert.entry_price,
+            total_cost=result.total_cost,
+            stop_loss_price=result.stop_loss_price,
+            take_profit_price=result.take_profit_price,
+            option_symbol=result.option_symbol,
+            stop_order_id=result.stop_order_id,
+        )
+        add_pending_order(pending)
 
         # Track position for manual TP mode
         if Config.EXIT_MODE == "manual":
@@ -144,13 +323,26 @@ async def on_message(message: discord.Message):
             else "TP: awaiting trim alert"
         )
         reply = (
-            f"**Order Placed**\n"
+            f"**Order Placed Successfully**\n"
             f"{result.message}\n"
+            f"Order ID: `{result.order_id}`\n"
             f"Contracts: {result.contracts} | "
             f"Total cost: ${result.total_cost:.2f} | "
             f"SL: ${result.stop_loss_price:.2f} | "
             f"{tp_line}"
         )
+
+        # Check fill status (paper orders fill instantly)
+        if Config.PAPER_TRADE:
+            remove_pending_order(pending.order_id)
+            reply += "\nStatus: **Filled** (paper)"
+        else:
+            status = await get_order_status(result.order_id)
+            if status and status.lower() in ("filled", "completed"):
+                remove_pending_order(pending.order_id)
+                reply += f"\nStatus: **Filled**"
+            else:
+                reply += f"\nStatus: **Pending** — use `{PREFIX}orders` to check"
     else:
         logger.warning("Order failed: %s", result.message)
         reply = f"**Order Failed**\n{result.message}"
@@ -173,7 +365,7 @@ async def _handle_trim_alert(message: discord.Message, trim):
     for pos in positions:
         contracts_to_sell = max(1, round(pos.contracts * trim.sell_fraction))
 
-        result = sell_position(
+        result = await sell_position(
             option_symbol=pos.option_symbol,
             contracts=contracts_to_sell,
             stop_order_id=pos.stop_order_id,
@@ -210,6 +402,24 @@ async def _handle_command(message: discord.Message, command: str):
         await _show_settings(message)
     elif cmd == "positions":
         await _show_positions(message)
+    elif cmd == "orders":
+        await _show_orders(message)
+    elif cmd == "buy":
+        await _manual_buy(message, command)
+    elif cmd == "cancel" and len(parts) >= 2:
+        await _cancel_order(message, parts[1])
+    elif cmd == "cancel":
+        await message.channel.send(f"Usage: `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
+    elif cmd == "bump" and len(parts) >= 2:
+        await _bump_order(message, parts[1])
+    elif cmd == "keep" and len(parts) >= 2:
+        order_id = parts[1]
+        pending = get_all_pending_orders()
+        if order_id in pending:
+            pending[order_id].suppress_alerts = True
+            await message.channel.send(f"✅ Got it — keeping order `{order_id}` open, won't alert again.")
+        else:
+            await message.channel.send(f"Order `{order_id}` not found in pending orders.")
     elif cmd == "set" and len(parts) >= 3:
         await _set_setting(message, parts[1], parts[2])
     elif cmd == "help":
@@ -293,7 +503,7 @@ async def _set_setting(message: discord.Message, key: str, value: str):
             await message.channel.send("Paper trading **enabled** — no real orders will be placed")
         elif value in ("off", "false", "no"):
             Config.PAPER_TRADE = False
-            if not login():
+            if not await login():
                 await message.channel.send(
                     "Paper trading disabled but **Tastytrade login failed**. "
                     "Fix credentials and try again."
@@ -319,12 +529,227 @@ async def _set_setting(message: discord.Message, key: str, value: str):
         )
 
 
+async def _manual_buy(message: discord.Message, command: str):
+    """Manually place an order: !buy TICKER STRIKE call/put EXPIRATION @ PRICE"""
+    alert = await parse_alert(command)
+    if alert is None:
+        await message.channel.send(
+            f"Could not parse. Usage:\n"
+            f"`{PREFIX}buy AAPL 150 call 3/21 @ 2.50`\n"
+            f"`{PREFIX}buy SPY 450 put @ 1.05` (defaults to this Friday)"
+        )
+        return
+
+    logger.info("Manual buy: %s $%.2f %s exp %s @ $%.2f",
+                alert.ticker, alert.strike, alert.option_type,
+                alert.expiration, alert.entry_price)
+
+    mode_label = "PAPER" if Config.PAPER_TRADE else "LIVE"
+    exit_label = "auto OTOCO" if Config.EXIT_MODE == "auto" else "manual"
+    await message.channel.send(
+        f"**Placing Order** [{mode_label} | {exit_label}]\n"
+        f"{alert.ticker} ${alert.strike} {alert.option_type} exp {alert.expiration} "
+        f"@ ${alert.entry_price:.2f}..."
+    )
+
+    result = await place_order(alert)
+
+    if result.success:
+        logger.info("Manual order placed: %s", result.message)
+
+        pending = PendingOrder(
+            order_id=result.order_id or "unknown",
+            ticker=alert.ticker,
+            strike=alert.strike,
+            option_type=alert.option_type,
+            expiration=alert.expiration,
+            contracts=result.contracts,
+            entry_price=alert.entry_price,
+            total_cost=result.total_cost,
+            stop_loss_price=result.stop_loss_price,
+            take_profit_price=result.take_profit_price,
+            option_symbol=result.option_symbol,
+            stop_order_id=result.stop_order_id,
+        )
+        add_pending_order(pending)
+
+        if Config.EXIT_MODE == "manual":
+            pos = Position(
+                ticker=alert.ticker,
+                strike=alert.strike,
+                option_type=alert.option_type,
+                expiration=alert.expiration,
+                contracts=result.contracts,
+                entry_price=alert.entry_price,
+                total_cost=result.total_cost,
+                stop_loss_price=result.stop_loss_price,
+                entry_order_id=result.order_id,
+                stop_order_id=result.stop_order_id,
+                option_symbol=result.option_symbol,
+            )
+            add_position(pos)
+
+        tp_line = (
+            f"TP: ${result.take_profit_price:.2f}"
+            if result.take_profit_price > 0
+            else "TP: awaiting trim alert"
+        )
+        reply = (
+            f"**Order Placed Successfully**\n"
+            f"{result.message}\n"
+            f"Order ID: `{result.order_id}`\n"
+            f"Contracts: {result.contracts} | "
+            f"Total cost: ${result.total_cost:.2f} | "
+            f"SL: ${result.stop_loss_price:.2f} | "
+            f"{tp_line}"
+        )
+
+        if Config.PAPER_TRADE:
+            remove_pending_order(pending.order_id)
+            reply += "\nStatus: **Filled** (paper)"
+        else:
+            status = await get_order_status(result.order_id)
+            if status and status.lower() in ("filled", "completed"):
+                remove_pending_order(pending.order_id)
+                reply += "\nStatus: **Filled**"
+            else:
+                reply += f"\nStatus: **Pending** — use `{PREFIX}orders` to check"
+    else:
+        reply = f"**Order Failed**\n{result.message}"
+
+    await message.channel.send(reply)
+
+
+async def _show_orders(message: discord.Message):
+    """Show all pending (unfilled) orders."""
+    pending = get_all_pending_orders()
+    if not pending:
+        await message.channel.send("No pending orders.")
+        return
+
+    # Refresh statuses and remove filled ones
+    filled = []
+    lines = ["**Pending Orders**\n```"]
+    for order_id, order in pending.items():
+        status = await get_order_status(order_id)
+        if status and status.lower() in ("filled", "completed"):
+            filled.append(order_id)
+            continue
+        if status and status.lower() in ("cancelled", "canceled", "rejected", "expired"):
+            filled.append(order_id)
+            continue
+        status_str = status or "Unknown"
+        lines.append(
+            f"[{order_id}] {order.ticker} {order.contracts}x "
+            f"${order.strike} {order.option_type} exp {order.expiration} "
+            f"@ ${order.entry_price:.2f} — {status_str}"
+        )
+
+    # Clean up filled/cancelled orders
+    for oid in filled:
+        remove_pending_order(oid)
+
+    if len(lines) == 1:
+        await message.channel.send("No pending orders (all previously pending orders have filled or been cancelled).")
+        return
+
+    lines.append("```")
+    lines.append(f"Cancel with `{PREFIX}cancel <order_id>` or `{PREFIX}cancel all`")
+    await message.channel.send("\n".join(lines))
+
+
+async def _bump_order(message: discord.Message, order_id: str):
+    """Cancel existing order and resubmit at a higher price (+BUMP_PCT%)."""
+    pending = get_all_pending_orders()
+    order = pending.get(order_id)
+    if not order:
+        await message.channel.send(f"Order `{order_id}` not found. Use `{PREFIX}orders` to see pending orders.")
+        return
+
+    new_price = round(round((order.entry_price * (1 + BUMP_PCT / 100)) / 0.05) * 0.05, 2)
+    await message.channel.send(f"⏳ Bumping order `{order_id}` — cancelling and resubmitting @ ${new_price:.2f}...")
+
+    result = await bump_order_price(order, new_price)
+    if result.success:
+        remove_pending_order(order_id)
+        add_pending_order(PendingOrder(
+            order_id=result.order_id or order_id,
+            ticker=order.ticker,
+            strike=order.strike,
+            option_type=order.option_type,
+            expiration=order.expiration,
+            contracts=order.contracts,
+            entry_price=new_price,
+            stop_loss_price=order.stop_loss_price,
+            stop_order_id=result.stop_order_id,
+            option_symbol=order.option_symbol,
+        ))
+        await message.channel.send(f"✅ **Order Bumped** — new order `{result.order_id}` @ ${new_price:.2f}")
+    else:
+        await message.channel.send(f"❌ **Bump failed:** {result.message}")
+
+
+async def _cancel_order(message: discord.Message, order_id_or_all: str):
+    """Cancel a pending order by ID, or all pending orders."""
+    pending = get_all_pending_orders()
+
+    if not pending:
+        await message.channel.send("No pending orders to cancel.")
+        return
+
+    if order_id_or_all == "all":
+        cancelled = []
+        failed = []
+        for oid, order in pending.items():
+            if await cancel_order(oid):
+                remove_pending_order(oid)
+                cancelled.append(f"{order.ticker} [{oid}]")
+            else:
+                failed.append(f"{order.ticker} [{oid}]")
+
+        lines = []
+        if cancelled:
+            lines.append(f"**Cancelled {len(cancelled)} order(s):**\n" + ", ".join(cancelled))
+        if failed:
+            lines.append(f"**Failed to cancel {len(failed)}:**\n" + ", ".join(failed))
+        await message.channel.send("\n".join(lines) if lines else "No orders to cancel.")
+        return
+
+    # Cancel specific order
+    order = pending.get(order_id_or_all)
+    if not order:
+        await message.channel.send(
+            f"Order `{order_id_or_all}` not found. Use `{PREFIX}orders` to see pending orders."
+        )
+        return
+
+    if await cancel_order(order_id_or_all):
+        # Also cancel the associated stop order if any
+        if order.stop_order_id:
+            await cancel_order(order.stop_order_id)
+        remove_pending_order(order_id_or_all)
+        await message.channel.send(
+            f"**Order Cancelled**\n"
+            f"{order.ticker} {order.contracts}x ${order.strike} {order.option_type} "
+            f"exp {order.expiration} — Order `{order_id_or_all}`"
+        )
+    else:
+        await message.channel.send(
+            f"**Failed to cancel** order `{order_id_or_all}`. "
+            f"It may have already filled or been cancelled."
+        )
+
+
 async def _show_help(message: discord.Message):
     reply = (
         f"**Trading Bot Commands**\n"
         f"```\n"
         f"{PREFIX}settings              View current settings\n"
         f"{PREFIX}positions             View open positions\n"
+        f"{PREFIX}orders                View pending (unfilled) orders\n"
+        f"{PREFIX}buy TICKER ...        Manually place an order\n"
+        f"{PREFIX}cancel <id>           Cancel a pending order by ID\n"
+        f"{PREFIX}cancel all            Cancel all pending orders\n"
         f"{PREFIX}set risk <pct>        Set risk per trade (default: 1%)\n"
         f"{PREFIX}set stoploss <pct>    Set stop-loss % (default: 25%)\n"
         f"{PREFIX}set takeprofit <pct>  Set take-profit % (default: 30%)\n"
