@@ -14,12 +14,14 @@ Uses the tastyware/tastytrade SDK to:
   - Sell positions on trim alerts
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from tastytrade import Session, Account
+from tastytrade import Session, Account, DXLinkStreamer
+from tastytrade.dxfeed import Quote
 from tastytrade.instruments import Option, get_option_chain
 from tastytrade.order import (
     Leg,
@@ -127,6 +129,21 @@ async def _find_option(alert: ParsedAlert) -> Option | None:
         "Option not found: %s $%s %s exp %s",
         alert.ticker, alert.strike, alert.option_type, exp_date,
     )
+    return None
+
+
+async def _get_ask_price(option: Option) -> float | None:
+    """Fetch the current ask price for an option via DXLink streaming quote."""
+    try:
+        async with DXLinkStreamer(_session) as streamer:
+            await streamer.subscribe(Quote, [option.symbol])
+            quote = await asyncio.wait_for(streamer.get_event(Quote), timeout=5.0)
+            ask = float(quote.ask_price)
+            if ask > 0:
+                logger.info("Live ask price for %s: $%.2f", option.symbol, ask)
+                return ask
+    except Exception as e:
+        logger.warning("Could not fetch ask price for %s: %s", option.symbol, e)
     return None
 
 
@@ -249,6 +266,34 @@ async def place_order(alert: ParsedAlert) -> OrderResult:
                         f"${alert.strike} {alert.option_type} exp {alert.expiration}",
             )
 
+        # If no price given in alert, fetch live ask and use as limit price
+        if getattr(alert, 'use_market_order', False):
+            ask = await _get_ask_price(option)
+            if ask:
+                rounded_ask = round(round(ask / 0.05) * 0.05, 2)
+                logger.info("No price in alert — using ask price $%.2f as limit", rounded_ask)
+                alert = alert.__class__(
+                    ticker=alert.ticker, strike=alert.strike,
+                    option_type=alert.option_type, expiration=alert.expiration,
+                    entry_price=rounded_ask, raw_text=alert.raw_text,
+                    use_market_order=False,
+                )
+                # Recalculate stop/tp based on actual price
+                num_contracts, stop_loss_price, take_profit_price = calculate_position(
+                    account_value=account_value,
+                    entry_price=rounded_ask,
+                    risk_pct=effective_risk_pct,
+                    stop_loss_pct=Config.STOP_LOSS_PCT,
+                    take_profit_pct=Config.TAKE_PROFIT_PCT,
+                )
+                total_cost = num_contracts * rounded_ask * 100
+            else:
+                return OrderResult(
+                    success=False, order_id=None, stop_order_id=None, option_symbol=None,
+                    contracts=0, total_cost=0, stop_loss_price=0, take_profit_price=0,
+                    message=f"No price in alert and could not fetch live ask for {alert.ticker} — please re-send with a price",
+                )
+
         opening_leg = option.build_leg(Decimal(num_contracts), OrderAction.BUY_TO_OPEN)
         closing_leg = option.build_leg(Decimal(num_contracts), OrderAction.SELL_TO_CLOSE)
         option_symbol = option.symbol
@@ -279,16 +324,12 @@ async def _place_otoco(
     num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
     """Place an OTOCO order: entry triggers OCO (take-profit + stop-loss)."""
-    entry_order_type = OrderType.MARKET if getattr(alert, 'use_market_order', False) else OrderType.LIMIT
-    entry_price_kwargs = {} if entry_order_type == OrderType.MARKET else {
-        "price": Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2)))
-    }
     otoco = NewComplexOrder(
         trigger_order=NewOrder(
             time_in_force=OrderTimeInForce.DAY,
-            order_type=entry_order_type,
+            order_type=OrderType.LIMIT,
             legs=[opening_leg],
-            **entry_price_kwargs,
+            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
         ),
         orders=[
             NewOrder(
@@ -328,16 +369,12 @@ async def _place_entry_with_stop(
     num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
     """Place OTOCO bracket: entry triggers OCO (stop-loss + take-profit). TP can be overridden by trim alert."""
-    entry_order_type = OrderType.MARKET if getattr(alert, 'use_market_order', False) else OrderType.LIMIT
-    entry_price_kwargs = {} if entry_order_type == OrderType.MARKET else {
-        "price": Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2)))
-    }
     bracket = NewComplexOrder(
         trigger_order=NewOrder(
             time_in_force=OrderTimeInForce.DAY,
-            order_type=entry_order_type,
+            order_type=OrderType.LIMIT,
             legs=[opening_leg],
-            **entry_price_kwargs,
+            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
         ),
         orders=[
             NewOrder(
