@@ -183,7 +183,7 @@ async def place_order(alert: ParsedAlert) -> OrderResult:
 
     logger.info("Account value: $%.2f", account_value)
 
-    is_lotto = "lotto" in alert.raw_text.lower()
+    is_lotto = any(kw in alert.raw_text.lower() for kw in ("lotto", "taking a few", "take a few"))
     effective_risk_pct = Config.RISK_PER_TRADE_PCT * (0.5 if is_lotto else 1.0)
     if is_lotto:
         logger.info("Lotto alert detected — using half risk (%.1f%%)", effective_risk_pct)
@@ -279,12 +279,16 @@ async def _place_otoco(
     num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
     """Place an OTOCO order: entry triggers OCO (take-profit + stop-loss)."""
+    entry_order_type = OrderType.MARKET if getattr(alert, 'use_market_order', False) else OrderType.LIMIT
+    entry_price_kwargs = {} if entry_order_type == OrderType.MARKET else {
+        "price": Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2)))
+    }
     otoco = NewComplexOrder(
         trigger_order=NewOrder(
             time_in_force=OrderTimeInForce.DAY,
-            order_type=OrderType.LIMIT,
+            order_type=entry_order_type,
             legs=[opening_leg],
-            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
+            **entry_price_kwargs,
         ),
         orders=[
             NewOrder(
@@ -324,12 +328,16 @@ async def _place_entry_with_stop(
     num_contracts, total_cost, stop_loss_price, take_profit_price,
 ) -> OrderResult:
     """Place OTOCO bracket: entry triggers OCO (stop-loss + take-profit). TP can be overridden by trim alert."""
+    entry_order_type = OrderType.MARKET if getattr(alert, 'use_market_order', False) else OrderType.LIMIT
+    entry_price_kwargs = {} if entry_order_type == OrderType.MARKET else {
+        "price": Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2)))
+    }
     bracket = NewComplexOrder(
         trigger_order=NewOrder(
             time_in_force=OrderTimeInForce.DAY,
-            order_type=OrderType.LIMIT,
+            order_type=entry_order_type,
             legs=[opening_leg],
-            price=Decimal(str(-round(round(alert.entry_price / 0.05) * 0.05, 2))),
+            **entry_price_kwargs,
         ),
         orders=[
             NewOrder(

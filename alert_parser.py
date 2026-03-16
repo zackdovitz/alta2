@@ -47,6 +47,7 @@ class ParsedAlert:
     expiration: str   # ISO date string YYYY-MM-DD
     entry_price: float
     raw_text: str
+    use_market_order: bool = False  # True when no price given in alert
 
 
 @dataclass
@@ -90,13 +91,13 @@ Extract the following fields from the message and return ONLY valid JSON (no mar
   "strike": <strike price as a number, e.g. 150.0>,
   "option_type": "<call or put>",
   "expiration": "<YYYY-MM-DD; use next Friday if weekly/unspecified>",
-  "entry_price": <price per contract as a number, e.g. 2.50; handle decimals like .50 as 0.50>
+  "entry_price": <price per contract as a number, e.g. 2.50; handle decimals like .50 as 0.50; use -1 if no price is mentioned>
 }}
 
 Rules:
 - option_type: if not explicitly stated, default to "call" for buy/BTO alerts (most alerts are calls unless "put" or "P" is mentioned)
-- expiration: "weeklies" or "weekly" means next Friday; if not specified default to next Friday
-- entry_price: handle prices without leading zero (e.g. "@.50" = 0.50, "@.75" = 0.75)
+- expiration: "weeklies" or "weekly" means next Friday; "0dte" or "0 dte" means today ({today}); if not specified default to next Friday
+- entry_price: handle prices without leading zero (e.g. "@.50" = 0.50, "@.75" = 0.75); if no price is given at all, return -1
 - Only set a field to null if you truly cannot determine it at all.
 Today's date is {today}.
 
@@ -157,8 +158,16 @@ def _llm_parse_entry_sync(text: str) -> ParsedAlert | None:
         expiration = data.get("expiration")
         entry_price = data.get("entry_price")
 
-        if not all([ticker, strike is not None, option_type in ("call", "put"),
-                    expiration, entry_price is not None]):
+        entry_price_raw = data.get("entry_price")
+        # -1 means no price given — flag for market order
+        if entry_price_raw is None:
+            return None
+        entry_price = float(entry_price_raw)
+        use_market = (entry_price < 0)
+        if use_market:
+            entry_price = 0.0  # will be filled at market
+
+        if not all([ticker, strike is not None, option_type in ("call", "put"), expiration]):
             return None
 
         return ParsedAlert(
@@ -166,7 +175,8 @@ def _llm_parse_entry_sync(text: str) -> ParsedAlert | None:
             strike=float(strike),
             option_type=option_type,
             expiration=str(expiration),
-            entry_price=float(entry_price),
+            entry_price=entry_price,
+            use_market_order=use_market,
             raw_text=text,
         )
     except Exception as e:
