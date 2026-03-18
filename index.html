@@ -15,33 +15,19 @@
     height: 100vh;
     font-family: monospace;
     overflow: hidden;
+    user-select: none;
   }
-  #header {
-    color: #e8d5b7;
-    font-size: 18px;
-    margin-bottom: 8px;
-    text-align: center;
-    image-rendering: pixelated;
-  }
-  #header span { color: #ff6b8a; }
-  #header .cats-score { color: #8888ff; }
   canvas {
     border: 4px solid #e8d5b7;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #3a7d44;
   }
-  #info {
-    color: #e8d5b7;
-    font-size: 14px;
-    margin-top: 8px;
-    text-align: center;
-  }
-  #win-screen {
-    display: none;
+  #overlay {
+    display: flex;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.85);
+    background: rgba(0,0,0,0.88);
     color: #ffe66d;
     font-size: 48px;
     flex-direction: column;
@@ -49,73 +35,75 @@
     justify-content: center;
     font-family: monospace;
     z-index: 10;
+    text-align: center;
+    cursor: pointer;
   }
-  #win-screen .sub { font-size: 20px; color: #e8d5b7; margin-top: 16px; }
-  #win-screen .restart { font-size: 18px; color: #ff6b8a; margin-top: 24px; cursor: pointer; }
-  #lose-screen {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.85);
-    color: #ff4444;
-    font-size: 42px;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-family: monospace;
-    z-index: 10;
-  }
-  #lose-screen .sub { font-size: 18px; color: #e8d5b7; margin-top: 16px; }
-  #lose-screen .restart { font-size: 18px; color: #ff6b8a; margin-top: 24px; cursor: pointer; }
+  #overlay .title { font-size: 42px; color: #ffe66d; text-shadow: 3px 3px 0 #cc8800; }
+  #overlay .sub { font-size: 18px; color: #e8d5b7; margin-top: 12px; line-height: 1.6; }
+  #overlay .controls { font-size: 14px; color: #8888aa; margin-top: 20px; line-height: 1.8; }
+  #overlay .action { font-size: 22px; color: #ff6b8a; margin-top: 28px; animation: pulse 1.2s ease-in-out infinite; }
+  #overlay .hiscore { font-size: 16px; color: #aaaadd; margin-top: 12px; }
+  #overlay .rank { font-size: 16px; color: #8888bb; margin-top: 6px; }
+  #overlay .stat { font-size: 20px; color: #e8d5b7; margin-top: 8px; }
+  #overlay .score-big { font-size: 36px; color: #ffe66d; margin-top: 16px; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 </style>
 </head>
 <body>
-<div id="header">PUG BERRY CHOMPER &mdash; <span>Pug: <span id="score">0</span></span> | <span class="cats-score">Cats: <span id="cat-score">0</span></span> | <span style="color:#ffe66d">Time: <span id="timer">0:00</span></span></div>
 <canvas id="game" width="480" height="480"></canvas>
-<div id="info">Arrow keys / WASD to move &mdash; Beat the cats to the berries!</div>
-<div id="win-screen">
-  <div>YOU WIN!</div>
-  <div class="sub">The pug has become ABSOLUTE UNIT</div>
-  <div class="sub" id="win-time"></div>
-  <div class="sub" id="win-score" style="color:#ffe66d; font-size:28px; margin-top:12px;"></div>
-  <div class="sub" id="win-rank" style="font-size:16px; margin-top:8px;"></div>
-  <div class="restart" id="win-replay" onclick="restartGame()" style="display:none;">[ Close & Replay ]</div>
-</div>
-<div id="lose-screen">
-  <div>GAME OVER!</div>
-  <div class="sub">The cats ate all the berries...</div>
-  <div class="sub" id="lose-time"></div>
-  <div class="restart" id="lose-replay" onclick="restartGame()" style="display:none;">[ Close & Replay ]</div>
+<div id="overlay">
+  <div class="title">PUG BERRY CHOMPER</div>
+  <div class="sub">Eat berries. Grow HUGE. Beat the cats!</div>
+  <div class="controls">
+    WASD / Arrows &mdash; Move<br>
+    SPACE &mdash; Dash<br>
+    Collect power-ups! Eat fast for combos!
+  </div>
+  <div class="action">[ Press any key or tap to start ]</div>
+  <div class="hiscore" id="hiscore-display"></div>
 </div>
 <script>
+// ============================================================
+//  PUG BERRY CHOMPER — Full Arcade Rebuild
+// ============================================================
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const W = canvas.width;
 const H = canvas.height;
-const scoreEl = document.getElementById('score');
-const catScoreEl = document.getElementById('cat-score');
-const winScreen = document.getElementById('win-screen');
-const loseScreen = document.getElementById('lose-screen');
+const overlay = document.getElementById('overlay');
+const hiscoreDisplay = document.getElementById('hiscore-display');
 
-// ---- 8-BIT MUSIC ENGINE (Web Audio API) ----
+// ---- CONSTANTS ----
+const INITIAL_SIZE = 36;
+const WIN_SIZE_RATIO = 0.82;
+const GROWTH_PER_BERRY = 10;
+const BASE_SPEED = 2.8;
+const BASE_CAT_SPEED = 0.9;
+const CAT_SIZE = 28;
+const INITIAL_CATS = 2;
+const MAX_CATS = 5;
+const MAX_BERRIES_STOLEN = 20;
+const BERRIES_PER_WAVE = 10;
+const DASH_SPEED_MULT = 3.2;
+const DASH_DURATION = 10; // frames
+const DASH_COOLDOWN = 100; // frames (~1.7s at 60fps)
+const COMBO_WINDOW = 90; // frames to keep combo alive
+const POWERUP_INTERVAL = 900; // frames between power-up spawns (~15s)
+const GOLDEN_CHANCE = 0.08; // 8% chance a berry is golden
+
+// ---- AUDIO ENGINE ----
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
 let musicPlaying = false;
-let musicNodes = [];
+let musicTimeout = null;
 
-// Simple chiptune melody notes (frequency, duration pairs)
-// A cute bouncy 8-bit loop
 const MELODY = [
-  // Bar 1
   [392, 0.15], [440, 0.15], [494, 0.15], [523, 0.3],
   [494, 0.15], [440, 0.15], [392, 0.3],
-  // Bar 2
   [330, 0.15], [349, 0.15], [392, 0.15], [440, 0.3],
   [392, 0.15], [349, 0.15], [330, 0.3],
-  // Bar 3
   [294, 0.15], [330, 0.15], [349, 0.15], [392, 0.3],
   [440, 0.15], [494, 0.15], [523, 0.3],
-  // Bar 4
   [494, 0.15], [440, 0.15], [392, 0.15], [349, 0.3],
   [330, 0.15], [294, 0.15], [330, 0.3],
 ];
@@ -132,7 +120,7 @@ function initAudio() {
   audioCtx = new AudioCtx();
 }
 
-function playSquareNote(freq, startTime, duration, volume, type) {
+function playNote(freq, startTime, duration, volume, type) {
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
   osc.type = type || 'square';
@@ -143,39 +131,21 @@ function playSquareNote(freq, startTime, duration, volume, type) {
   gain.connect(audioCtx.destination);
   osc.start(startTime);
   osc.stop(startTime + duration);
-  musicNodes.push(osc);
 }
 
 function scheduleLoop() {
-  if (!audioCtx || won || gameOver) return;
+  if (!audioCtx || !musicPlaying) return;
   const now = audioCtx.currentTime;
-
-  // Schedule melody
   let t = now;
-  for (const [freq, dur] of MELODY) {
-    playSquareNote(freq, t, dur, 0.07, 'square');
-    t += dur;
-  }
+  for (const [freq, dur] of MELODY) { playNote(freq, t, dur, 0.06, 'square'); t += dur; }
   const loopDuration = t - now;
-
-  // Schedule bass
   let tb = now;
-  for (const [freq, dur] of BASS) {
-    playSquareNote(freq, tb, dur, 0.06, 'triangle');
-    tb += dur;
-  }
-
-  // Schedule percussion (noise-like hi-hats using high freq)
+  for (const [freq, dur] of BASS) { playNote(freq, tb, dur, 0.05, 'triangle'); tb += dur; }
   for (let i = 0; i < loopDuration / 0.3; i++) {
-    const pt = now + i * 0.3;
-    playSquareNote(6000 + Math.random() * 2000, pt, 0.03, 0.015, 'sawtooth');
+    playNote(6000 + Math.random() * 2000, now + i * 0.3, 0.03, 0.012, 'sawtooth');
   }
-
-  // Schedule next loop
   musicTimeout = setTimeout(scheduleLoop, (loopDuration - 0.1) * 1000);
 }
-
-let musicTimeout = null;
 
 function startMusic() {
   if (musicPlaying) return;
@@ -190,7 +160,50 @@ function stopMusic() {
   if (musicTimeout) { clearTimeout(musicTimeout); musicTimeout = null; }
 }
 
-// ---- Pixel art drawing helpers ----
+function sfx(type) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  if (type === 'eat') {
+    playNote(600, now, 0.06, 0.1, 'square');
+    playNote(900, now + 0.06, 0.06, 0.08, 'square');
+    playNote(1200, now + 0.12, 0.08, 0.06, 'square');
+  } else if (type === 'golden') {
+    playNote(523, now, 0.08, 0.1, 'square');
+    playNote(659, now + 0.08, 0.08, 0.1, 'square');
+    playNote(784, now + 0.16, 0.08, 0.1, 'square');
+    playNote(1047, now + 0.24, 0.15, 0.08, 'square');
+  } else if (type === 'dash') {
+    playNote(200, now, 0.05, 0.08, 'sawtooth');
+    playNote(400, now + 0.03, 0.08, 0.06, 'sawtooth');
+  } else if (type === 'powerup') {
+    playNote(440, now, 0.1, 0.09, 'square');
+    playNote(554, now + 0.1, 0.1, 0.09, 'square');
+    playNote(659, now + 0.2, 0.1, 0.09, 'square');
+    playNote(880, now + 0.3, 0.2, 0.07, 'square');
+  } else if (type === 'combo') {
+    playNote(800, now, 0.05, 0.07, 'square');
+    playNote(1000, now + 0.05, 0.05, 0.07, 'square');
+  } else if (type === 'wave') {
+    for (let i = 0; i < 4; i++) {
+      playNote(440 + i * 110, now + i * 0.12, 0.12, 0.07, 'square');
+    }
+  } else if (type === 'catsteal') {
+    playNote(300, now, 0.15, 0.06, 'triangle');
+    playNote(200, now + 0.1, 0.15, 0.06, 'triangle');
+  } else if (type === 'lose') {
+    playNote(400, now, 0.2, 0.1, 'square');
+    playNote(300, now + 0.2, 0.2, 0.1, 'square');
+    playNote(200, now + 0.4, 0.4, 0.1, 'square');
+  } else if (type === 'win') {
+    const notes = [523, 587, 659, 784, 880, 1047];
+    notes.forEach((f, i) => playNote(f, now + i * 0.12, 0.15, 0.08, 'square'));
+  } else if (type === 'scare') {
+    playNote(150, now, 0.15, 0.1, 'sawtooth');
+    playNote(120, now + 0.1, 0.15, 0.08, 'sawtooth');
+  }
+}
+
+// ---- PIXEL ART ----
 function drawPixelGrid(x, y, size, grid, palette) {
   const pxSize = size / grid[0].length;
   for (let row = 0; row < grid.length; row++) {
@@ -198,195 +211,260 @@ function drawPixelGrid(x, y, size, grid, palette) {
       const colorIdx = grid[row][col];
       if (colorIdx === 0) continue;
       ctx.fillStyle = palette[colorIdx];
-      ctx.fillRect(
-        Math.floor(x + col * pxSize),
-        Math.floor(y + row * pxSize),
-        Math.ceil(pxSize),
-        Math.ceil(pxSize)
-      );
+      ctx.fillRect(Math.floor(x + col * pxSize), Math.floor(y + row * pxSize), Math.ceil(pxSize), Math.ceil(pxSize));
     }
   }
 }
 
-// ---- 8-bit Pug sprite (12x12 grid) ----
-const pugPalette = {
-  1: '#e8c99b',
-  2: '#8b6914',
-  3: '#222222',
-  4: '#f5f0e0',
-  5: '#ff8fab',
-  6: '#a07030',
-};
-
+// Pug sprites
+const pugPalette = { 1:'#e8c99b', 2:'#8b6914', 3:'#222222', 4:'#f5f0e0', 5:'#ff8fab', 6:'#a07030' };
 const pugRight = [
-  [0,0,0,6,6,0,0,6,6,0,0,0],
-  [0,0,6,1,1,6,6,1,1,6,0,0],
-  [0,0,1,1,1,1,1,1,1,1,0,0],
-  [0,1,1,3,1,1,1,1,3,1,1,0],
-  [0,1,1,3,1,2,2,1,3,1,1,0],
-  [0,1,1,1,2,3,3,2,1,1,1,0],
-  [0,0,1,1,2,2,2,2,1,1,0,0],
-  [0,0,1,1,1,5,5,1,1,1,0,0],
-  [0,1,1,1,1,1,1,1,1,1,1,0],
-  [0,1,1,0,1,1,1,1,0,1,1,0],
-  [0,1,1,0,0,0,0,0,0,1,1,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,6,6,0,0,6,6,0,0,0],[0,0,6,1,1,6,6,1,1,6,0,0],[0,0,1,1,1,1,1,1,1,1,0,0],
+  [0,1,1,3,1,1,1,1,3,1,1,0],[0,1,1,3,1,2,2,1,3,1,1,0],[0,1,1,1,2,3,3,2,1,1,1,0],
+  [0,0,1,1,2,2,2,2,1,1,0,0],[0,0,1,1,1,5,5,1,1,1,0,0],[0,1,1,1,1,1,1,1,1,1,1,0],
+  [0,1,1,0,1,1,1,1,0,1,1,0],[0,1,1,0,0,0,0,0,0,1,1,0],[0,0,0,0,0,0,0,0,0,0,0,0],
 ];
-
-const pugLeft = pugRight.map(row => [...row].reverse());
-
+const pugLeft = pugRight.map(r => [...r].reverse());
 const pugRightWalk = [
-  [0,0,0,6,6,0,0,6,6,0,0,0],
-  [0,0,6,1,1,6,6,1,1,6,0,0],
-  [0,0,1,1,1,1,1,1,1,1,0,0],
-  [0,1,1,3,1,1,1,1,3,1,1,0],
-  [0,1,1,3,1,2,2,1,3,1,1,0],
-  [0,1,1,1,2,3,3,2,1,1,1,0],
-  [0,0,1,1,2,2,2,2,1,1,0,0],
-  [0,0,1,1,1,5,5,1,1,1,0,0],
-  [0,1,1,1,1,1,1,1,1,1,1,0],
-  [0,0,1,1,0,1,1,0,1,1,0,0],
-  [0,0,1,1,0,0,0,0,1,1,0,0],
-  [0,0,0,0,0,0,0,0,0,0,0,0],
+  [0,0,0,6,6,0,0,6,6,0,0,0],[0,0,6,1,1,6,6,1,1,6,0,0],[0,0,1,1,1,1,1,1,1,1,0,0],
+  [0,1,1,3,1,1,1,1,3,1,1,0],[0,1,1,3,1,2,2,1,3,1,1,0],[0,1,1,1,2,3,3,2,1,1,1,0],
+  [0,0,1,1,2,2,2,2,1,1,0,0],[0,0,1,1,1,5,5,1,1,1,0,0],[0,1,1,1,1,1,1,1,1,1,1,0],
+  [0,0,1,1,0,1,1,0,1,1,0,0],[0,0,1,1,0,0,0,0,1,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0],
 ];
+const pugLeftWalk = pugRightWalk.map(r => [...r].reverse());
 
-const pugLeftWalk = pugRightWalk.map(row => [...row].reverse());
-
-// ---- Cat sprite (10x10 grid) ----
-// Palette: 0=transparent, 1=gray body, 2=dark gray, 3=black, 4=white, 5=pink nose, 6=ear inner
-const catPalette = {
-  1: '#8888aa', // gray body
-  2: '#666688', // dark gray
-  3: '#222222', // black
-  4: '#eeeeff', // white
-  5: '#ff88aa', // pink nose
-  6: '#cc88aa', // ear inner
-};
-
-// Orange cat variant
-const orangeCatPalette = {
-  1: '#e8a040', // orange body
-  2: '#c07828', // dark orange
-  3: '#222222', // black
-  4: '#ffeecc', // white/cream
-  5: '#ff88aa', // pink nose
-  6: '#cc7744', // ear inner
-};
-
-// Black cat variant
-const blackCatPalette = {
-  1: '#555566', // dark gray body
-  2: '#333344', // darker
-  3: '#111111', // black
-  4: '#aaaacc', // light eyes
-  5: '#ff6688', // pink nose
-  6: '#444455', // ear inner
-};
-
-const catPalettes = [catPalette, orangeCatPalette, blackCatPalette];
-
+// Cat sprites
+const catPalettes = [
+  { 1:'#8888aa', 2:'#666688', 3:'#222222', 4:'#eeeeff', 5:'#ff88aa', 6:'#cc88aa' },
+  { 1:'#e8a040', 2:'#c07828', 3:'#222222', 4:'#ffeecc', 5:'#ff88aa', 6:'#cc7744' },
+  { 1:'#555566', 2:'#333344', 3:'#111111', 4:'#aaaacc', 5:'#ff6688', 6:'#444455' },
+  { 1:'#ddddee', 2:'#bbbbcc', 3:'#222222', 4:'#ffffff', 5:'#ff88aa', 6:'#ccbbcc' },
+  { 1:'#aa7755', 2:'#885533', 3:'#222222', 4:'#ddccaa', 5:'#ff88aa', 6:'#996644' },
+];
 const catRight = [
-  [0,3,3,0,0,0,0,3,3,0],
-  [0,3,6,3,0,0,3,6,3,0],
-  [0,1,1,1,1,1,1,1,1,0],
-  [1,1,3,1,1,1,1,3,1,1],
-  [1,1,3,1,1,1,1,3,1,1],
-  [1,1,1,1,5,5,1,1,1,1],
-  [0,1,1,1,1,1,1,1,1,0],
-  [0,1,1,1,1,1,1,1,1,0],
-  [0,1,0,0,1,1,0,0,1,0],
-  [0,1,0,0,0,0,0,0,1,0],
+  [0,3,3,0,0,0,0,3,3,0],[0,3,6,3,0,0,3,6,3,0],[0,1,1,1,1,1,1,1,1,0],
+  [1,1,3,1,1,1,1,3,1,1],[1,1,3,1,1,1,1,3,1,1],[1,1,1,1,5,5,1,1,1,1],
+  [0,1,1,1,1,1,1,1,1,0],[0,1,1,1,1,1,1,1,1,0],[0,1,0,0,1,1,0,0,1,0],[0,1,0,0,0,0,0,0,1,0],
 ];
-
-const catLeft = catRight.map(row => [...row].reverse());
-
+const catLeft = catRight.map(r => [...r].reverse());
 const catRightWalk = [
-  [0,3,3,0,0,0,0,3,3,0],
-  [0,3,6,3,0,0,3,6,3,0],
-  [0,1,1,1,1,1,1,1,1,0],
-  [1,1,3,1,1,1,1,3,1,1],
-  [1,1,3,1,1,1,1,3,1,1],
-  [1,1,1,1,5,5,1,1,1,1],
-  [0,1,1,1,1,1,1,1,1,0],
-  [0,1,1,1,1,1,1,1,1,0],
-  [0,0,1,0,1,1,0,1,0,0],
-  [0,0,1,0,0,0,0,1,0,0],
+  [0,3,3,0,0,0,0,3,3,0],[0,3,6,3,0,0,3,6,3,0],[0,1,1,1,1,1,1,1,1,0],
+  [1,1,3,1,1,1,1,3,1,1],[1,1,3,1,1,1,1,3,1,1],[1,1,1,1,5,5,1,1,1,1],
+  [0,1,1,1,1,1,1,1,1,0],[0,1,1,1,1,1,1,1,1,0],[0,0,1,0,1,1,0,1,0,0],[0,0,1,0,0,0,0,1,0,0],
+];
+const catLeftWalk = catRightWalk.map(r => [...r].reverse());
+
+// Berry sprite
+const berryPalette = { 1:'#2d8c2d', 2:'#ff2255', 3:'#cc1144', 4:'#ffee88', 5:'#ff5577' };
+const goldenBerryPalette = { 1:'#2d8c2d', 2:'#ffcc00', 3:'#ddaa00', 4:'#ffffff', 5:'#ffee44' };
+const berrySprite = [
+  [0,0,0,1,1,0,0,0],[0,0,1,1,0,1,0,0],[0,2,2,2,2,2,2,0],[2,2,4,2,2,4,2,2],
+  [2,5,2,2,4,2,5,2],[0,3,2,4,2,2,3,0],[0,0,3,2,2,3,0,0],[0,0,0,3,3,0,0,0],
 ];
 
-const catLeftWalk = catRightWalk.map(row => [...row].reverse());
+// Power-up sprites (simple 8x8 icons)
+const powerupPalettes = {
+  speed:  { 1:'#ffee00', 2:'#ffaa00', 3:'#ff6600' },
+  freeze: { 1:'#88ddff', 2:'#4488ff', 3:'#2244cc' },
+  magnet: { 1:'#ff4466', 2:'#cc2244', 3:'#881133' },
+  shield: { 1:'#88ff88', 2:'#44cc44', 3:'#228822' },
+};
+const powerupSprites = {
+  speed: [ // Lightning bolt
+    [0,0,0,0,1,1,0,0],[0,0,0,1,1,0,0,0],[0,0,1,1,0,0,0,0],[0,1,1,1,1,1,0,0],
+    [0,0,0,1,1,0,0,0],[0,0,1,1,0,0,0,0],[0,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0],
+  ],
+  freeze: [ // Snowflake
+    [0,0,0,1,0,0,0,0],[0,1,0,1,0,1,0,0],[0,0,2,2,2,0,0,0],[1,1,2,3,2,1,1,0],
+    [0,0,2,2,2,0,0,0],[0,1,0,1,0,1,0,0],[0,0,0,1,0,0,0,0],[0,0,0,0,0,0,0,0],
+  ],
+  magnet: [ // Magnet shape
+    [1,1,0,0,0,1,1,0],[1,2,1,0,1,2,1,0],[0,1,2,1,2,1,0,0],[0,0,1,2,1,0,0,0],
+    [0,0,1,2,1,0,0,0],[0,1,2,1,2,1,0,0],[1,2,1,0,1,2,1,0],[1,1,0,0,0,1,1,0],
+  ],
+  shield: [ // Star
+    [0,0,0,1,0,0,0,0],[0,0,1,2,1,0,0,0],[1,1,2,3,2,1,1,0],[0,1,2,3,2,1,0,0],
+    [0,1,2,3,2,1,0,0],[1,2,1,0,1,2,1,0],[1,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,0],
+  ],
+};
+const POWERUP_TYPES = ['speed', 'freeze', 'magnet', 'shield'];
+const POWERUP_DURATIONS = { speed: 300, freeze: 240, magnet: 360, shield: 9999 }; // shield = hit-based
 
-// Tail sprites drawn separately
-function drawCatTail(x, y, size, facing, frame) {
-  const px = size / 10;
-  ctx.fillStyle = catPalettes[0][1]; // we'll set per-cat below
-  const tailSway = Math.sin(Date.now() / 200) * px * 2;
-  if (facing === 1) {
-    ctx.fillRect(x - px * 2 + tailSway, y + px * 2, px, px * 4);
-    ctx.fillRect(x - px * 3 + tailSway, y + px, px, px * 2);
-  } else {
-    ctx.fillRect(x + size + px + tailSway, y + px * 2, px, px * 4);
-    ctx.fillRect(x + size + px * 2 + tailSway, y + px, px, px * 2);
+// ---- PARTICLES ----
+let particles = [];
+function spawnParticles(x, y, color, count, speed, life) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = speed * (0.5 + Math.random());
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      life: life * (0.6 + Math.random() * 0.4),
+      maxLife: life,
+      color,
+      size: 2 + Math.random() * 3,
+    });
   }
 }
 
-// ---- Strawberry sprite (8x8 grid) ----
-const berryPalette = {
-  1: '#2d8c2d',
-  2: '#ff2255',
-  3: '#cc1144',
-  4: '#ffee88',
-  5: '#ff5577',
-};
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.96;
+    p.vy *= 0.96;
+    p.vy += 0.05; // gravity
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
 
-const berrySprite = [
-  [0,0,0,1,1,0,0,0],
-  [0,0,1,1,0,1,0,0],
-  [0,2,2,2,2,2,2,0],
-  [2,2,4,2,2,4,2,2],
-  [2,5,2,2,4,2,5,2],
-  [0,3,2,4,2,2,3,0],
-  [0,0,3,2,2,3,0,0],
-  [0,0,0,3,3,0,0,0],
-];
+function drawParticles() {
+  particles.forEach(p => {
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+  });
+  ctx.globalAlpha = 1;
+}
 
-// ---- Grass decoration ----
-const grassPalette = {
-  1: '#2e6e2e',
-  2: '#4a9a4a',
-};
+// ---- SCREEN SHAKE ----
+let shakeAmount = 0;
+let shakeDecay = 0.9;
+function addShake(amount) { shakeAmount = Math.max(shakeAmount, amount); }
 
-// ---- Game state ----
-const INITIAL_SIZE = 36;
-const WIN_SIZE_RATIO = 0.85;
-const GROWTH_PER_BERRY = 12;
-const SPEED = 2.5;
-const CAT_SPEED = 0.8;
-const CAT_SIZE = 28;
-const NUM_CATS = 2;
-const MAX_BERRIES_STOLEN = 15; // cats steal this many = game over
+// ---- FLOATING TEXT ----
+let floatingTexts = [];
+function addFloatingText(x, y, text, color, size) {
+  floatingTexts.push({ x, y, text, color, size: size || 20, life: 60, maxLife: 60, vy: -1.5 });
+}
 
-let pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
-let berries = [];
-let cats = [];
-let score = 0;
-let catScore = 0;
-let won = false;
-let gameOver = false;
-let grassPatches = [];
-let animTimer = 0;
-let pugMoving = false;
-let gameStartTime = 0;
-let gameElapsed = 0; // seconds
-let gameStarted = false; // starts on first move
-let endScreenTimeout = null;
+function updateFloatingTexts() {
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const ft = floatingTexts[i];
+    ft.y += ft.vy;
+    ft.vy *= 0.97;
+    ft.life--;
+    if (ft.life <= 0) floatingTexts.splice(i, 1);
+  }
+}
 
-const timerEl = document.getElementById('timer');
-const winTimeEl = document.getElementById('win-time');
-const winScoreEl = document.getElementById('win-score');
-const winRankEl = document.getElementById('win-rank');
-const winReplayBtn = document.getElementById('win-replay');
-const loseTimeEl = document.getElementById('lose-time');
-const loseReplayBtn = document.getElementById('lose-replay');
+function drawFloatingTexts() {
+  floatingTexts.forEach(ft => {
+    const alpha = ft.life / ft.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = ft.color;
+    ctx.font = `bold ${ft.size}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText(ft.text, ft.x, ft.y);
+  });
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'left';
+}
+
+// ---- GAME STATE ----
+let gameState = 'title'; // title, playing, win, lose
+let pug, berries, cats, powerups, grassPatches;
+let score, catScore, wave, berriesThisWave, totalBerriesEaten;
+let combo, comboTimer, lastComboX, lastComboY;
+let dashTimer, dashCooldown, dashDir;
+let activePowerups; // { speed: frames, freeze: frames, magnet: frames, shield: hits }
+let powerupSpawnTimer;
+let gameStartTime, gameElapsed;
+let frameCount;
+let highScore = parseInt(localStorage.getItem('pugBerryHighScore') || '0');
+let waveAnnounce, waveAnnounceTimer;
+let scareCooldown;
+
+function resetGame() {
+  pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
+  berries = [];
+  cats = [];
+  powerups = [];
+  particles = [];
+  floatingTexts = [];
+  grassPatches = [];
+  score = 0;
+  catScore = 0;
+  wave = 1;
+  berriesThisWave = 0;
+  totalBerriesEaten = 0;
+  combo = 0;
+  comboTimer = 0;
+  lastComboX = 0;
+  lastComboY = 0;
+  dashTimer = 0;
+  dashCooldown = 0;
+  dashDir = { x: 0, y: 0 };
+  activePowerups = { speed: 0, freeze: 0, magnet: 0, shield: 0 };
+  powerupSpawnTimer = POWERUP_INTERVAL;
+  gameStartTime = Date.now();
+  gameElapsed = 0;
+  frameCount = 0;
+  shakeAmount = 0;
+  waveAnnounce = '';
+  waveAnnounceTimer = 0;
+  scareCooldown = 0;
+
+  for (let i = 0; i < 4; i++) spawnBerry();
+  spawnCats();
+  initGrass();
+}
+
+function spawnBerry() {
+  const margin = 30;
+  let attempts = 0, bx, by;
+  do {
+    bx = margin + Math.random() * (W - margin * 2);
+    by = margin + Math.random() * (H - margin * 2);
+    attempts++;
+  } while (attempts < 50 && dist(bx, by, pug.x, pug.y) < pug.size + 40);
+  const golden = Math.random() < GOLDEN_CHANCE;
+  berries.push({ x: bx, y: by, bobOffset: Math.random() * Math.PI * 2, golden });
+}
+
+function spawnCats() {
+  cats = [];
+  const numCats = Math.min(MAX_CATS, INITIAL_CATS + Math.floor((wave - 1) / 3));
+  const corners = [
+    { x: 40, y: 40 }, { x: W - 40, y: 40 },
+    { x: 40, y: H - 40 }, { x: W - 40, y: H - 40 },
+    { x: W / 2, y: 40 },
+  ];
+  for (let i = 0; i < numCats; i++) {
+    const corner = corners[i % corners.length];
+    cats.push({
+      x: corner.x, y: corner.y,
+      vx: 0, vy: 0,
+      facing: 1, frame: 0,
+      paletteIdx: i % catPalettes.length,
+      waitTimer: 120 + Math.random() * 90,
+      animTimer: 0,
+      scared: 0,
+      frozenTimer: 0,
+    });
+  }
+}
+
+function spawnPowerup() {
+  const margin = 40;
+  const px = margin + Math.random() * (W - margin * 2);
+  const py = margin + Math.random() * (H - margin * 2);
+  const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+  powerups.push({ x: px, y: py, type, bobOffset: Math.random() * Math.PI * 2, life: 600 });
+}
+
+function initGrass() {
+  grassPatches = [];
+  for (let i = 0; i < 40; i++) {
+    grassPatches.push({ x: Math.random() * W, y: Math.random() * H, type: Math.floor(Math.random() * 3) });
+  }
+}
+
+function dist(x1, y1, x2, y2) { return Math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2); }
 
 function formatTime(secs) {
   const m = Math.floor(secs / 60);
@@ -394,117 +472,66 @@ function formatTime(secs) {
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
-function calcScore(elapsedSecs, berriesEaten, berriesStolen) {
-  // Base: reward speed. 10000 points minus time penalty, bonus per berry, penalty per cat steal
-  const timeBonus = Math.max(0, 10000 - Math.floor(elapsedSecs) * 50);
-  const berryBonus = berriesEaten * 200;
-  const catPenalty = berriesStolen * 300;
-  return Math.max(0, timeBonus + berryBonus - catPenalty);
+function calcScore() {
+  const timeBonus = Math.max(0, 10000 - Math.floor(gameElapsed) * 30);
+  const berryBonus = totalBerriesEaten * 200;
+  const catPenalty = catScore * 250;
+  const waveBonus = (wave - 1) * 500;
+  return Math.max(0, timeBonus + berryBonus - catPenalty + waveBonus);
 }
 
-function getRank(score) {
-  if (score >= 9000) return 'S  -  LEGENDARY PUG!';
-  if (score >= 7000) return 'A  -  Berry Master';
-  if (score >= 5000) return 'B  -  Good Boy';
-  if (score >= 3000) return 'C  -  Average Chomper';
-  if (score >= 1000) return 'D  -  Slow Snacker';
+function getRank(s) {
+  if (s >= 12000) return 'S  -  LEGENDARY PUG!';
+  if (s >= 9000) return 'A  -  Berry Master';
+  if (s >= 6000) return 'B  -  Good Boy';
+  if (s >= 3500) return 'C  -  Average Chomper';
+  if (s >= 1500) return 'D  -  Slow Snacker';
   return 'F  -  The cats won this round...';
 }
 
-function spawnBerry() {
-  const margin = 30;
-  let attempts = 0;
-  let bx, by;
-  do {
-    bx = margin + Math.random() * (W - margin * 2);
-    by = margin + Math.random() * (H - margin * 2);
-    attempts++;
-  } while (attempts < 50 && dist(bx, by, pug.x, pug.y) < pug.size + 40);
-  berries.push({ x: bx, y: by, bobOffset: Math.random() * Math.PI * 2 });
-}
-
-function spawnCats() {
-  cats = [];
-  const corners = [
-    { x: 50, y: 50 },
-    { x: W - 50, y: 50 },
-    { x: 50, y: H - 50 },
-    { x: W - 50, y: H - 50 },
-  ];
-  for (let i = 0; i < NUM_CATS; i++) {
-    const corner = corners[i % corners.length];
-    cats.push({
-      x: corner.x,
-      y: corner.y,
-      vx: 0, vy: 0,
-      facing: 1,
-      frame: 0,
-      paletteIdx: i % catPalettes.length,
-      targetBerry: null,
-      waitTimer: 120 + Math.random() * 90, // longer pause before chasing
-      animTimer: 0,
-    });
-  }
-}
-
-function initGrass() {
-  grassPatches = [];
-  for (let i = 0; i < 40; i++) {
-    grassPatches.push({
-      x: Math.random() * W,
-      y: Math.random() * H,
-      type: Math.floor(Math.random() * 3),
-    });
-  }
-}
-
-function dist(x1, y1, x2, y2) {
-  return Math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2);
-}
-
-function restartGame() {
-  pug = { x: W / 2, y: H / 2, size: INITIAL_SIZE, vx: 0, vy: 0, facing: 1, frame: 0 };
-  berries = [];
-  cats = [];
-  score = 0;
-  catScore = 0;
-  won = false;
-  gameOver = false;
-  pugMoving = false;
-  gameStarted = false;
-  gameStartTime = 0;
-  gameElapsed = 0;
-  if (endScreenTimeout) { clearTimeout(endScreenTimeout); endScreenTimeout = null; }
-  scoreEl.textContent = '0';
-  catScoreEl.textContent = '0';
-  timerEl.textContent = '0:00';
-  winScreen.style.display = 'none';
-  loseScreen.style.display = 'none';
-  winReplayBtn.style.display = 'none';
-  loseReplayBtn.style.display = 'none';
-  for (let i = 0; i < 3; i++) spawnBerry();
-  spawnCats();
-  initGrass();
-  stopMusic();
-}
-
-// ---- Input ----
+// ---- INPUT ----
 const keys = {};
+let touchDir = { x: 0, y: 0 };
+let inputStarted = false;
+
+function startGame() {
+  if (gameState !== 'title' && gameState !== 'win' && gameState !== 'lose') return;
+  resetGame();
+  gameState = 'playing';
+  overlay.style.display = 'none';
+  startMusic();
+  inputStarted = false;
+}
+
 window.addEventListener('keydown', e => {
   keys[e.key] = true;
-  // Only allow restart via button during end screens
-  if (!musicPlaying && !won && !gameOver) startMusic();
+  if (gameState !== 'playing') { startGame(); return; }
+  if (e.key === ' ' || e.key === 'Shift') {
+    e.preventDefault();
+    tryDash();
+  }
 });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
 
-let touchDir = { x: 0, y: 0 };
-canvas.addEventListener('touchstart', handleTouch, { passive: false });
-canvas.addEventListener('touchmove', handleTouch, { passive: false });
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (gameState !== 'playing') { startGame(); return; }
+  handleTouch(e);
+}, { passive: false });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); handleTouch(e); }, { passive: false });
 canvas.addEventListener('touchend', () => { touchDir = { x: 0, y: 0 }; });
 
+// Double-tap to dash on mobile
+let lastTapTime = 0;
+canvas.addEventListener('touchstart', e => {
+  const now = Date.now();
+  if (now - lastTapTime < 300) tryDash();
+  lastTapTime = now;
+}, { passive: true });
+
+overlay.addEventListener('click', () => { startGame(); });
+
 function handleTouch(e) {
-  e.preventDefault();
-  if (!musicPlaying && !won && !gameOver) startMusic();
   const rect = canvas.getBoundingClientRect();
   const scaleX = W / rect.width;
   const scaleY = H / rect.height;
@@ -513,9 +540,7 @@ function handleTouch(e) {
   const dx = tx - pug.x;
   const dy = ty - pug.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  if (len > 5) {
-    touchDir = { x: dx / len, y: dy / len };
-  }
+  if (len > 5) touchDir = { x: dx / len, y: dy / len };
 }
 
 function getInput() {
@@ -531,13 +556,70 @@ function getInput() {
   return { dx, dy };
 }
 
-// ---- Cat AI ----
+function tryDash() {
+  if (dashCooldown > 0 || dashTimer > 0) return;
+  const input = getInput();
+  if (Math.abs(input.dx) < 0.01 && Math.abs(input.dy) < 0.01) {
+    // Dash in facing direction if no input
+    dashDir = { x: pug.facing, y: 0 };
+  } else {
+    dashDir = { x: input.dx, y: input.dy };
+  }
+  dashTimer = DASH_DURATION;
+  dashCooldown = DASH_COOLDOWN;
+  sfx('dash');
+  addShake(3);
+  // Dash trail particles
+  for (let i = 0; i < 6; i++) {
+    spawnParticles(pug.x, pug.y, '#ffe66d', 2, 1, 15);
+  }
+}
+
+// ---- CAT AI ----
 function updateCats() {
+  const pugSizeRatio = pug.size / (Math.min(W, H) * WIN_SIZE_RATIO);
+  const pugIsScary = pugSizeRatio > 0.55;
+
   cats.forEach(cat => {
-    // Wait timer (brief pause after eating)
+    // Frozen by power-up
+    if (cat.frozenTimer > 0) {
+      cat.frozenTimer--;
+      cat.frame = 0;
+      return;
+    }
+
+    // Wait timer
     if (cat.waitTimer > 0) {
       cat.waitTimer--;
       cat.frame = 0;
+      return;
+    }
+
+    // Scared by big pug
+    if (cat.scared > 0) {
+      cat.scared--;
+      // Run away from pug
+      const dx = cat.x - pug.x;
+      const dy = cat.y - pug.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 1) {
+        const fleeSpeed = BASE_CAT_SPEED * 1.5;
+        cat.x += (dx / len) * fleeSpeed;
+        cat.y += (dy / len) * fleeSpeed;
+        if (dx > 0) cat.facing = 1; else cat.facing = -1;
+        cat.animTimer++;
+        if (cat.animTimer % 8 === 0) cat.frame = (cat.frame + 1) % 2;
+      }
+      cat.x = Math.max(CAT_SIZE / 2, Math.min(W - CAT_SIZE / 2, cat.x));
+      cat.y = Math.max(CAT_SIZE / 2, Math.min(H - CAT_SIZE / 2, cat.y));
+      return;
+    }
+
+    // Scare check: if pug is big and close, cats get scared
+    if (pugIsScary && dist(cat.x, cat.y, pug.x, pug.y) < pug.size * 1.2) {
+      cat.scared = 120;
+      sfx('scare');
+      addFloatingText(cat.x, cat.y - 20, '!', '#ffaa00', 24);
       return;
     }
 
@@ -546,12 +628,8 @@ function updateCats() {
     let nearestDist = Infinity;
     berries.forEach(b => {
       const d = dist(cat.x, cat.y, b.x, b.y);
-      if (d < nearestDist) {
-        nearestDist = d;
-        nearest = b;
-      }
+      if (d < nearestDist) { nearestDist = d; nearest = b; }
     });
-
     if (!nearest) return;
 
     // Move toward nearest berry
@@ -559,47 +637,47 @@ function updateCats() {
     const dy = nearest.y - cat.y;
     const len = Math.sqrt(dx * dx + dy * dy);
     if (len > 1) {
-      // Speed scales up slightly as cats get more competitive
-      const speed = CAT_SPEED + catScore * 0.02;
+      const speed = BASE_CAT_SPEED + (wave - 1) * 0.12 + catScore * 0.015;
       cat.vx = (dx / len) * speed;
       cat.vy = (dy / len) * speed;
       cat.x += cat.vx;
       cat.y += cat.vy;
-
-      // Facing
       if (cat.vx > 0.1) cat.facing = 1;
       if (cat.vx < -0.1) cat.facing = -1;
-
-      // Animate
       cat.animTimer++;
       if (cat.animTimer % 12 === 0) cat.frame = (cat.frame + 1) % 2;
     }
 
-    // Clamp to canvas
     cat.x = Math.max(CAT_SIZE / 2, Math.min(W - CAT_SIZE / 2, cat.x));
     cat.y = Math.max(CAT_SIZE / 2, Math.min(H - CAT_SIZE / 2, cat.y));
 
     // Eat berry
     for (let i = berries.length - 1; i >= 0; i--) {
       const b = berries[i];
-      const eatDist = (CAT_SIZE + 20) / 2;
-      if (dist(cat.x, cat.y, b.x, b.y) < eatDist) {
-        berries.splice(i, 1);
-        catScore++;
-        catScoreEl.textContent = catScore;
-        cat.waitTimer = 80 + Math.random() * 60; // long pause after eating
-
-        // Check lose condition
-        if (catScore >= MAX_BERRIES_STOLEN) {
-          gameOver = true;
-          loseTimeEl.textContent = 'Time survived: ' + formatTime(gameElapsed);
-          loseScreen.style.display = 'flex';
-          loseReplayBtn.style.display = 'block';
-          stopMusic();
-          return;
+      if (dist(cat.x, cat.y, b.x, b.y) < (CAT_SIZE + 20) / 2) {
+        // Shield blocks steal
+        if (activePowerups.shield > 0) {
+          activePowerups.shield--;
+          addFloatingText(b.x, b.y - 10, 'BLOCKED!', '#88ff88', 16);
+          spawnParticles(b.x, b.y, '#88ff88', 8, 2, 20);
+          cat.waitTimer = 60;
+          // Move berry away from cat
+          berries.splice(i, 1);
+          spawnBerry();
+          break;
         }
 
-        // Replace eaten berry
+        berries.splice(i, 1);
+        catScore++;
+        cat.waitTimer = 80 + Math.random() * 50;
+        sfx('catsteal');
+        spawnParticles(cat.x, cat.y, '#8888ff', 6, 1.5, 20);
+        addFloatingText(cat.x, cat.y - 15, '-1', '#ff4444', 16);
+
+        if (catScore >= MAX_BERRIES_STOLEN) {
+          endGame(false);
+          return;
+        }
         spawnBerry();
         break;
       }
@@ -607,27 +685,49 @@ function updateCats() {
   });
 }
 
-// ---- Update ----
+// ---- MAIN UPDATE ----
 function update() {
-  if (won || gameOver) return;
+  if (gameState !== 'playing') return;
+  frameCount++;
 
   const input = getInput();
-
-  // Start timer on first move
-  if (!gameStarted && (Math.abs(input.dx) > 0 || Math.abs(input.dy) > 0)) {
-    gameStarted = true;
+  if (!inputStarted && (Math.abs(input.dx) > 0 || Math.abs(input.dy) > 0)) {
+    inputStarted = true;
     gameStartTime = Date.now();
   }
 
-  // Update elapsed time
-  if (gameStarted) {
+  if (inputStarted) {
     gameElapsed = (Date.now() - gameStartTime) / 1000;
-    timerEl.textContent = formatTime(gameElapsed);
   }
 
-  const speed = SPEED + (pug.size - INITIAL_SIZE) * 0.02;
-  pug.vx = input.dx * speed;
-  pug.vy = input.dy * speed;
+  // Dash
+  if (dashCooldown > 0) dashCooldown--;
+  let speedMult = 1;
+  if (dashTimer > 0) {
+    dashTimer--;
+    speedMult = DASH_SPEED_MULT;
+    // Dash trail
+    if (dashTimer % 2 === 0) {
+      spawnParticles(pug.x, pug.y, '#ffe66d', 1, 0.5, 10);
+    }
+  }
+
+  // Active power-ups tick down
+  if (activePowerups.speed > 0) { activePowerups.speed--; speedMult *= 1.5; }
+  if (activePowerups.freeze > 0) { activePowerups.freeze--; }
+  if (activePowerups.magnet > 0) { activePowerups.magnet--; }
+
+  // Pug speed: slightly slower as you grow, but dash compensates
+  const growthPenalty = Math.max(0.7, 1 - (pug.size - INITIAL_SIZE) * 0.003);
+  const speed = BASE_SPEED * growthPenalty * speedMult;
+
+  if (dashTimer > 0) {
+    pug.vx = dashDir.x * speed;
+    pug.vy = dashDir.y * speed;
+  } else {
+    pug.vx = input.dx * speed;
+    pug.vy = input.dy * speed;
+  }
   pug.x += pug.vx;
   pug.y += pug.vy;
 
@@ -635,87 +735,223 @@ function update() {
   pug.x = Math.max(half, Math.min(W - half, pug.x));
   pug.y = Math.max(half, Math.min(H - half, pug.y));
 
-  // Track if pug is moving for music
-  const isMoving = Math.abs(pug.vx) > 0.1 || Math.abs(pug.vy) > 0.1;
-  if (isMoving && !pugMoving) {
-    pugMoving = true;
-  } else if (!isMoving && pugMoving) {
-    pugMoving = false;
-  }
-
   if (pug.vx > 0.1) pug.facing = 1;
   if (pug.vx < -0.1) pug.facing = -1;
 
+  const isMoving = Math.abs(pug.vx) > 0.1 || Math.abs(pug.vy) > 0.1;
   if (isMoving) {
-    animTimer++;
-    if (animTimer % 10 === 0) pug.frame = (pug.frame + 1) % 2;
+    pug.animTimer = (pug.animTimer || 0) + 1;
+    if (pug.animTimer % 8 === 0) pug.frame = (pug.frame + 1) % 2;
   } else {
     pug.frame = 0;
+  }
+
+  // Combo timer
+  if (comboTimer > 0) {
+    comboTimer--;
+    if (comboTimer === 0) combo = 0;
+  }
+
+  // Magnet: pull berries toward pug
+  if (activePowerups.magnet > 0) {
+    berries.forEach(b => {
+      const dx = pug.x - b.x;
+      const dy = pug.y - b.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 10 && d < 150) {
+        b.x += (dx / d) * 1.5;
+        b.y += (dy / d) * 1.5;
+      }
+    });
   }
 
   // Berry collision (pug)
   for (let i = berries.length - 1; i >= 0; i--) {
     const b = berries[i];
-    const berrySize = 20;
-    const eatDist = (pug.size + berrySize) / 2;
+    const eatDist = (pug.size + 20) / 2;
     if (dist(pug.x, pug.y, b.x, b.y) < eatDist) {
       berries.splice(i, 1);
-      score++;
-      scoreEl.textContent = score;
-      pug.size += GROWTH_PER_BERRY;
 
-      // Play eat sound
-      if (audioCtx) {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(600, audioCtx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.1);
-        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.15);
+      const berryValue = b.golden ? 3 : 1;
+
+      // Combo
+      combo++;
+      comboTimer = COMBO_WINDOW;
+      const comboMult = Math.min(combo, 5);
+      const points = berryValue * comboMult;
+      score += points;
+      totalBerriesEaten++;
+      berriesThisWave++;
+
+      pug.size += GROWTH_PER_BERRY * (b.golden ? 2 : 1);
+
+      // Effects
+      if (b.golden) {
+        sfx('golden');
+        spawnParticles(b.x, b.y, '#ffcc00', 15, 3, 30);
+        spawnParticles(b.x, b.y, '#ffffff', 8, 2, 25);
+        addFloatingText(b.x, b.y - 10, '+' + points + ' GOLDEN!', '#ffcc00', 22);
+        addShake(4);
+      } else {
+        sfx('eat');
+        spawnParticles(b.x, b.y, '#ff6b8a', 8, 2, 20);
+        addFloatingText(b.x, b.y - 10, '+' + points, '#ff6b8a', comboMult > 1 ? 18 : 14);
       }
 
-      const winSize = Math.min(W, H) * WIN_SIZE_RATIO;
-      if (pug.size >= winSize) {
-        won = true;
-        const finalScore = calcScore(gameElapsed, score, catScore);
-        winTimeEl.textContent = 'Time: ' + formatTime(gameElapsed);
-        winScoreEl.textContent = 'SCORE: ' + finalScore;
-        winRankEl.textContent = 'Rank: ' + getRank(finalScore);
-        winScreen.style.display = 'flex';
-        winReplayBtn.style.display = 'none';
-        endScreenTimeout = setTimeout(() => { winReplayBtn.style.display = 'block'; }, 5000);
-        stopMusic();
+      if (comboMult >= 3) {
+        sfx('combo');
+        addFloatingText(pug.x, pug.y - pug.size / 2 - 15, 'x' + comboMult + ' COMBO!', '#ffe66d', 20);
+      }
+
+      lastComboX = b.x;
+      lastComboY = b.y;
+
+      // Win check
+      if (pug.size >= Math.min(W, H) * WIN_SIZE_RATIO) {
+        endGame(true);
         return;
       }
 
+      // Spawn replacement + extra
       spawnBerry();
-      if (score % 3 === 0) spawnBerry();
+      if (totalBerriesEaten % 5 === 0) spawnBerry();
+
+      // Wave check
+      if (berriesThisWave >= BERRIES_PER_WAVE) {
+        wave++;
+        berriesThisWave = 0;
+        waveAnnounce = 'WAVE ' + wave;
+        waveAnnounceTimer = 120;
+        sfx('wave');
+        addShake(5);
+
+        // Scale difficulty: add cat if needed
+        const targetCats = Math.min(MAX_CATS, INITIAL_CATS + Math.floor((wave - 1) / 3));
+        while (cats.length < targetCats) {
+          const nx = Math.random() < 0.5 ? 30 : W - 30;
+          const ny = Math.random() < 0.5 ? 30 : H - 30;
+          cats.push({
+            x: nx, y: ny, vx: 0, vy: 0,
+            facing: 1, frame: 0,
+            paletteIdx: cats.length % catPalettes.length,
+            waitTimer: 90 + Math.random() * 60,
+            animTimer: 0, scared: 0, frozenTimer: 0,
+          });
+        }
+      }
     }
+  }
+
+  // Power-up collision
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const pu = powerups[i];
+    pu.life--;
+    if (pu.life <= 0) { powerups.splice(i, 1); continue; }
+    if (dist(pug.x, pug.y, pu.x, pu.y) < (pug.size + 16) / 2) {
+      powerups.splice(i, 1);
+      sfx('powerup');
+      addShake(3);
+
+      if (pu.type === 'speed') {
+        activePowerups.speed = POWERUP_DURATIONS.speed;
+        addFloatingText(pu.x, pu.y - 10, 'SPEED UP!', '#ffee00', 18);
+        spawnParticles(pu.x, pu.y, '#ffee00', 12, 2, 25);
+      } else if (pu.type === 'freeze') {
+        activePowerups.freeze = POWERUP_DURATIONS.freeze;
+        cats.forEach(c => { c.frozenTimer = POWERUP_DURATIONS.freeze; });
+        addFloatingText(pu.x, pu.y - 10, 'CAT FREEZE!', '#88ddff', 18);
+        spawnParticles(pu.x, pu.y, '#88ddff', 12, 2, 25);
+      } else if (pu.type === 'magnet') {
+        activePowerups.magnet = POWERUP_DURATIONS.magnet;
+        addFloatingText(pu.x, pu.y - 10, 'MAGNET!', '#ff4466', 18);
+        spawnParticles(pu.x, pu.y, '#ff4466', 12, 2, 25);
+      } else if (pu.type === 'shield') {
+        activePowerups.shield = 3; // blocks 3 steals
+        addFloatingText(pu.x, pu.y - 10, 'SHIELD x3!', '#88ff88', 18);
+        spawnParticles(pu.x, pu.y, '#88ff88', 12, 2, 25);
+      }
+    }
+  }
+
+  // Spawn power-ups periodically
+  powerupSpawnTimer--;
+  if (powerupSpawnTimer <= 0) {
+    spawnPowerup();
+    powerupSpawnTimer = POWERUP_INTERVAL + Math.floor(Math.random() * 300);
+  }
+
+  // Freeze: apply to all cats
+  if (activePowerups.freeze > 0) {
+    cats.forEach(c => { c.frozenTimer = Math.max(c.frozenTimer, 1); });
   }
 
   // Update cats
   updateCats();
+
+  // Update particles and floating text
+  updateParticles();
+  updateFloatingTexts();
+
+  // Shake decay
+  if (shakeAmount > 0) shakeAmount *= shakeDecay;
+  if (shakeAmount < 0.1) shakeAmount = 0;
+
+  // Wave announce timer
+  if (waveAnnounceTimer > 0) waveAnnounceTimer--;
 }
 
-// ---- Draw ----
+function endGame(didWin) {
+  const finalScore = calcScore();
+  if (finalScore > highScore) {
+    highScore = finalScore;
+    localStorage.setItem('pugBerryHighScore', String(highScore));
+  }
+  stopMusic();
+
+  if (didWin) {
+    gameState = 'win';
+    sfx('win');
+    overlay.innerHTML = `
+      <div class="title" style="color:#ffe66d;">YOU WIN!</div>
+      <div class="sub">The pug has become ABSOLUTE UNIT</div>
+      <div class="stat">Time: ${formatTime(gameElapsed)} &mdash; Wave ${wave}</div>
+      <div class="stat">Berries: ${totalBerriesEaten} eaten &mdash; Cats stole: ${catScore}</div>
+      <div class="score-big">SCORE: ${finalScore}</div>
+      <div class="rank">Rank: ${getRank(finalScore)}</div>
+      <div class="hiscore">High Score: ${highScore}</div>
+      <div class="action">[ Click / press any key to play again ]</div>
+    `;
+  } else {
+    gameState = 'lose';
+    sfx('lose');
+    overlay.innerHTML = `
+      <div class="title" style="color:#ff4444;">GAME OVER</div>
+      <div class="sub">The cats devoured all the berries!</div>
+      <div class="stat">Time: ${formatTime(gameElapsed)} &mdash; Wave ${wave}</div>
+      <div class="stat">Berries eaten: ${totalBerriesEaten}</div>
+      <div class="score-big">SCORE: ${finalScore}</div>
+      <div class="rank">Rank: ${getRank(finalScore)}</div>
+      <div class="hiscore">High Score: ${highScore}</div>
+      <div class="action">[ Click / press any key to retry ]</div>
+    `;
+  }
+  overlay.style.display = 'flex';
+}
+
+// ---- DRAW ----
 function drawGrass() {
   grassPatches.forEach(g => {
-    ctx.fillStyle = grassPalette[1];
     const t = Date.now() / 800 + g.x;
     const sway = Math.sin(t) * 1.5;
+    ctx.fillStyle = '#2e6e2e';
     if (g.type === 0) {
       ctx.fillRect(g.x + sway, g.y, 2, 6);
-      ctx.fillStyle = grassPalette[2];
+      ctx.fillStyle = '#4a9a4a';
       ctx.fillRect(g.x + 3 + sway, g.y + 1, 2, 5);
     } else if (g.type === 1) {
       ctx.fillRect(g.x + sway, g.y, 2, 8);
       ctx.fillRect(g.x - 2 + sway, g.y + 2, 2, 5);
-      ctx.fillStyle = grassPalette[2];
+      ctx.fillStyle = '#4a9a4a';
       ctx.fillRect(g.x + 3 + sway, g.y + 1, 2, 6);
     } else {
       ctx.fillRect(g.x + sway, g.y, 2, 5);
@@ -723,11 +959,35 @@ function drawGrass() {
   });
 }
 
-function drawBerries(time) {
+function drawBerries() {
+  const time = Date.now();
   berries.forEach(b => {
     const bobY = Math.sin(time / 400 + b.bobOffset) * 3;
-    const bSize = 20;
-    drawPixelGrid(b.x - bSize / 2, b.y - bSize / 2 + bobY, bSize, berrySprite, berryPalette);
+    const palette = b.golden ? goldenBerryPalette : berryPalette;
+    // Golden glow
+    if (b.golden) {
+      ctx.fillStyle = 'rgba(255, 204, 0, ' + (0.15 + Math.sin(time / 200) * 0.1) + ')';
+      ctx.beginPath();
+      ctx.arc(b.x, b.y + bobY, 16, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    drawPixelGrid(b.x - 10, b.y - 10 + bobY, 20, berrySprite, palette);
+  });
+}
+
+function drawPowerups() {
+  const time = Date.now();
+  powerups.forEach(pu => {
+    const bobY = Math.sin(time / 300 + pu.bobOffset) * 4;
+    const alpha = pu.life < 120 ? (Math.sin(time / 50) > 0 ? 1 : 0.3) : 1;
+    // Glow
+    ctx.fillStyle = `rgba(255,255,255,${0.1 * alpha})`;
+    ctx.beginPath();
+    ctx.arc(pu.x, pu.y + bobY, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = alpha;
+    drawPixelGrid(pu.x - 8, pu.y - 8 + bobY, 16, powerupSprites[pu.type], powerupPalettes[pu.type]);
+    ctx.globalAlpha = 1;
   });
 }
 
@@ -739,21 +999,51 @@ function drawPug() {
     sprite = pug.frame === 0 ? pugLeft : pugLeftWalk;
   }
   const half = pug.size / 2;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  ctx.beginPath();
+  ctx.ellipse(pug.x, pug.y + half - 2, pug.size * 0.4, pug.size * 0.12, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shield glow
+  if (activePowerups.shield > 0) {
+    ctx.strokeStyle = 'rgba(100,255,100,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pug.x, pug.y, half + 4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Speed trail
+  if (activePowerups.speed > 0) {
+    ctx.globalAlpha = 0.3;
+    drawPixelGrid(pug.x - half - pug.vx * 2, pug.y - half - pug.vy * 2, pug.size, sprite, pugPalette);
+    ctx.globalAlpha = 1;
+  }
+
+  // Dash flash
+  if (dashTimer > 0) {
+    ctx.globalAlpha = 0.4;
+    drawPixelGrid(pug.x - half - pug.vx * 3, pug.y - half - pug.vy * 3, pug.size, sprite, pugPalette);
+    ctx.globalAlpha = 1;
+  }
+
   drawPixelGrid(pug.x - half, pug.y - half, pug.size, sprite, pugPalette);
 }
 
 function drawCats() {
   cats.forEach(cat => {
+    const half = CAT_SIZE / 2;
+    const palette = catPalettes[cat.paletteIdx];
     let sprite;
     if (cat.facing === 1) {
       sprite = cat.frame === 0 ? catRight : catRightWalk;
     } else {
       sprite = cat.frame === 0 ? catLeft : catLeftWalk;
     }
-    const half = CAT_SIZE / 2;
-    const palette = catPalettes[cat.paletteIdx];
 
-    // Draw tail
+    // Tail
     ctx.fillStyle = palette[1];
     const tailSway = Math.sin(Date.now() / 200 + cat.paletteIdx) * 3;
     const px = CAT_SIZE / 10;
@@ -765,116 +1055,229 @@ function drawCats() {
       ctx.fillRect(cat.x + half + px * 2 + tailSway, cat.y - half + px, px, px * 2);
     }
 
-    // Draw shadow
+    // Shadow
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.beginPath();
     ctx.ellipse(cat.x, cat.y + half - 1, CAT_SIZE * 0.35, CAT_SIZE * 0.1, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Draw cat body
+    // Frozen tint
+    if (cat.frozenTimer > 0) {
+      ctx.globalAlpha = 0.6;
+    }
+    // Scared tint
+    if (cat.scared > 0) {
+      ctx.globalAlpha = 0.5 + Math.sin(Date.now() / 50) * 0.3;
+    }
+
     drawPixelGrid(cat.x - half, cat.y - half, CAT_SIZE, sprite, palette);
+
+    // Freeze overlay
+    if (cat.frozenTimer > 0) {
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = '#88ddff';
+      ctx.fillRect(cat.x - half, cat.y - half, CAT_SIZE, CAT_SIZE);
+      // Snowflake particles
+      if (frameCount % 10 === 0) {
+        spawnParticles(cat.x, cat.y - half, '#88ddff', 1, 0.5, 15);
+      }
+    }
+
+    // Scared indicator
+    if (cat.scared > 0) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#ffaa00';
+      ctx.font = 'bold 12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('!', cat.x, cat.y - half - 6);
+    }
+
+    ctx.globalAlpha = 1;
   });
+  ctx.textAlign = 'left';
 }
 
-function drawShadow() {
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
-  ctx.beginPath();
-  ctx.ellipse(pug.x, pug.y + pug.size / 2 - 2, pug.size * 0.4, pug.size * 0.12, 0, 0, Math.PI * 2);
-  ctx.fill();
-}
+function drawHUD() {
+  // Wave number
+  ctx.fillStyle = '#e8d5b7';
+  ctx.font = '11px monospace';
+  ctx.fillText('WAVE ' + wave, W / 2 - 22, 14);
 
-function drawSizeMeter() {
+  // Score
+  ctx.fillStyle = '#ffe66d';
+  ctx.font = 'bold 13px monospace';
+  ctx.fillText('SCORE: ' + score, W / 2 - 30, 28);
+
+  // Size meter (right)
   const winSize = Math.min(W, H) * WIN_SIZE_RATIO;
-  const progress = Math.min(1, (pug.size - INITIAL_SIZE) / (winSize - INITIAL_SIZE));
-  const barW = 120;
-  const barH = 10;
-  const bx = W - barW - 12;
-  const by = 10;
+  const sizeProgress = Math.min(1, (pug.size - INITIAL_SIZE) / (winSize - INITIAL_SIZE));
+  const barW = 100;
+  const barH = 8;
+  const bx = W - barW - 10;
+  let by = 8;
 
   ctx.fillStyle = 'rgba(0,0,0,0.4)';
   ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
   ctx.fillStyle = '#553322';
   ctx.fillRect(bx, by, barW, barH);
-
-  const grad = ctx.createLinearGradient(bx, 0, bx + barW * progress, 0);
-  grad.addColorStop(0, '#ff6b8a');
-  grad.addColorStop(1, '#ffe66d');
-  ctx.fillStyle = grad;
-  ctx.fillRect(bx, by, barW * progress, barH);
-
+  const sGrad = ctx.createLinearGradient(bx, 0, bx + barW * sizeProgress, 0);
+  sGrad.addColorStop(0, '#ff6b8a');
+  sGrad.addColorStop(1, '#ffe66d');
+  ctx.fillStyle = sGrad;
+  ctx.fillRect(bx, by, barW * sizeProgress, barH);
   ctx.fillStyle = '#e8d5b7';
-  ctx.font = '10px monospace';
-  ctx.fillText('SIZE', bx, by + barH + 12);
-}
+  ctx.font = '9px monospace';
+  ctx.fillText('SIZE', bx, by + barH + 10);
 
-function drawCatMeter() {
-  const progress = Math.min(1, catScore / MAX_BERRIES_STOLEN);
-  const barW = 120;
-  const barH = 10;
-  const bx = 12;
-  const by = 10;
+  // Cat steal meter (left)
+  const catProgress = Math.min(1, catScore / MAX_BERRIES_STOLEN);
+  by = 8;
+  const clx = 10;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(clx - 1, by - 1, barW + 2, barH + 2);
+  ctx.fillStyle = '#333355';
+  ctx.fillRect(clx, by, barW, barH);
+  const cGrad = ctx.createLinearGradient(clx, 0, clx + barW * catProgress, 0);
+  cGrad.addColorStop(0, '#6666cc');
+  cGrad.addColorStop(1, '#ff4444');
+  ctx.fillStyle = cGrad;
+  ctx.fillRect(clx, by, barW * catProgress, barH);
+  ctx.fillStyle = '#aaaadd';
+  ctx.font = '9px monospace';
+  ctx.fillText('CATS ' + catScore + '/' + MAX_BERRIES_STOLEN, clx, by + barH + 10);
+
+  // Dash cooldown indicator (bottom center)
+  const dashReady = dashCooldown <= 0 && dashTimer <= 0;
+  const dashProgress = dashCooldown > 0 ? 1 - dashCooldown / DASH_COOLDOWN : 1;
+  const dashBarW = 60;
+  const dashBarH = 6;
+  const dashX = (W - dashBarW) / 2;
+  const dashY = H - 16;
 
   ctx.fillStyle = 'rgba(0,0,0,0.4)';
-  ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
-  ctx.fillStyle = '#333355';
-  ctx.fillRect(bx, by, barW, barH);
+  ctx.fillRect(dashX - 1, dashY - 1, dashBarW + 2, dashBarH + 2);
+  ctx.fillStyle = '#333333';
+  ctx.fillRect(dashX, dashY, dashBarW, dashBarH);
+  ctx.fillStyle = dashReady ? '#ffe66d' : '#886633';
+  ctx.fillRect(dashX, dashY, dashBarW * dashProgress, dashBarH);
+  ctx.fillStyle = dashReady ? '#ffe66d' : '#886633';
+  ctx.font = '9px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(dashReady ? 'DASH [SPACE]' : 'DASH...', W / 2, dashY - 3);
+  ctx.textAlign = 'left';
 
-  const grad = ctx.createLinearGradient(bx, 0, bx + barW * progress, 0);
-  grad.addColorStop(0, '#6666cc');
-  grad.addColorStop(1, '#ff4444');
-  ctx.fillStyle = grad;
-  ctx.fillRect(bx, by, barW * progress, barH);
+  // Active power-up indicators (bottom left)
+  let puY = H - 30;
+  if (activePowerups.speed > 0) {
+    ctx.fillStyle = '#ffee00';
+    ctx.font = '10px monospace';
+    ctx.fillText('⚡SPEED ' + Math.ceil(activePowerups.speed / 60) + 's', 10, puY);
+    puY -= 14;
+  }
+  if (activePowerups.freeze > 0) {
+    ctx.fillStyle = '#88ddff';
+    ctx.font = '10px monospace';
+    ctx.fillText('❄FREEZE ' + Math.ceil(activePowerups.freeze / 60) + 's', 10, puY);
+    puY -= 14;
+  }
+  if (activePowerups.magnet > 0) {
+    ctx.fillStyle = '#ff4466';
+    ctx.font = '10px monospace';
+    ctx.fillText('🧲MAGNET ' + Math.ceil(activePowerups.magnet / 60) + 's', 10, puY);
+    puY -= 14;
+  }
+  if (activePowerups.shield > 0) {
+    ctx.fillStyle = '#88ff88';
+    ctx.font = '10px monospace';
+    ctx.fillText('🛡SHIELD x' + activePowerups.shield, 10, puY);
+  }
 
-  ctx.fillStyle = '#aaaadd';
+  // Combo display
+  if (combo >= 2 && comboTimer > 0) {
+    const comboAlpha = comboTimer / COMBO_WINDOW;
+    ctx.globalAlpha = comboAlpha;
+    ctx.fillStyle = '#ffe66d';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('x' + Math.min(combo, 5) + ' COMBO', W - 10, H - 30);
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+  }
+
+  // Timer
+  ctx.fillStyle = '#ffe66d';
   ctx.font = '10px monospace';
-  ctx.fillText('CATS ' + catScore + '/' + MAX_BERRIES_STOLEN, bx, by + barH + 12);
+  ctx.textAlign = 'right';
+  ctx.fillText(formatTime(gameElapsed), W - 10, 28);
+  ctx.textAlign = 'left';
+
+  // Wave announce
+  if (waveAnnounceTimer > 0) {
+    const alpha = waveAnnounceTimer > 80 ? 1 : waveAnnounceTimer / 80;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#ffe66d';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(waveAnnounce, W / 2, H / 2 - 50);
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#e8d5b7';
+    ctx.fillText('Cats are getting faster!', W / 2, H / 2 - 25);
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+  }
 }
 
 function draw() {
-  ctx.clearRect(0, 0, W, H);
+  ctx.save();
 
+  // Screen shake
+  if (shakeAmount > 0) {
+    const sx = (Math.random() - 0.5) * shakeAmount * 2;
+    const sy = (Math.random() - 0.5) * shakeAmount * 2;
+    ctx.translate(sx, sy);
+  }
+
+  // Background
   ctx.fillStyle = '#3a7d44';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(-5, -5, W + 10, H + 10);
 
+  // Checkerboard
   ctx.fillStyle = 'rgba(0,0,0,0.03)';
   const tileSize = 32;
   for (let r = 0; r < H / tileSize; r++) {
     for (let c = 0; c < W / tileSize; c++) {
-      if ((r + c) % 2 === 0) {
-        ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
-      }
+      if ((r + c) % 2 === 0) ctx.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
     }
   }
 
   drawGrass();
-
-  const time = Date.now();
-  drawBerries(time);
+  drawBerries();
+  drawPowerups();
   drawCats();
-  drawShadow();
   drawPug();
-  drawSizeMeter();
-  drawCatMeter();
-  drawTimer();
+  drawParticles();
+  drawFloatingTexts();
+  drawHUD();
+
+  ctx.restore();
 }
 
-function drawTimer() {
-  ctx.fillStyle = '#ffe66d';
-  ctx.font = '12px monospace';
-  const timeStr = formatTime(gameElapsed);
-  const tw = ctx.measureText(timeStr).width;
-  ctx.fillText(timeStr, (W - tw) / 2, 20);
-}
-
-// ---- Game loop ----
+// ---- GAME LOOP ----
 function gameLoop() {
-  update();
-  draw();
+  if (gameState === 'playing') {
+    update();
+  }
+  if (gameState !== 'title') {
+    draw();
+  }
   requestAnimationFrame(gameLoop);
 }
 
-// ---- Init ----
-restartGame();
+// ---- INIT ----
+if (highScore > 0) {
+  hiscoreDisplay.textContent = 'High Score: ' + highScore;
+}
+resetGame();
 gameLoop();
 </script>
 </body>
