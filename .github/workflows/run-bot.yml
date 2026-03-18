@@ -1,10 +1,7 @@
 name: Run Trading Bot
 
 on:
-  # Auto-restart every 5.5 hours to stay within GitHub's 6-hour limit
-  schedule:
-    - cron: '0 */6 * * *'
-  # Manual trigger from GitHub UI
+  # Manual trigger only — bot now runs locally
   workflow_dispatch:
 
 jobs:
